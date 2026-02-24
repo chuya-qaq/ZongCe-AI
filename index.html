@@ -49,12 +49,12 @@
     // 🚀 数据库配置区
     // ==========================================
     const localFirebaseConfig = {
-      apiKey: "在此填入你的 apiKey",
-      authDomain: "在此填入你的 authDomain",
-      projectId: "在此填入你的 projectId",
-      storageBucket: "在此填入你的 storageBucket",
-      messagingSenderId: "在此填入你的 messagingSenderId",
-      appId: "在此填入你的 appId"
+      apiKey: "AIzaSyBL8ACBb8qTeg_AwUCPGNV4XZPtPErVZZg",
+      authDomain: "zongce-ai.firebaseapp.com",
+      projectId: "zongce-ai",
+      storageBucket: "zongce-ai.firebasestorage.app",
+      messagingSenderId: "526161486669",
+      appId: "1:526161486669:web:6e211a793d85934de34d04"
     };
 
     let envConfig = null;
@@ -194,7 +194,7 @@
         setTimeout(() => setToast({ show: false, message: '', type: 'success' }), 4000);
       };
 
-      // 极限压制：将画质调为0.35，最大宽度降至800，防 Firestore 超限
+      // 强效图片压缩引擎：兼顾清晰度与极端体积控制
       const compressImage = (file, callback, targetMaxWidth = 800, targetQuality = 0.35) => {
         const reader = new FileReader();
         reader.onload = (e) => {
@@ -214,7 +214,6 @@
 
       const currentStudents = useMemo(() => studentsData.filter(s => s.className === currentClass), [currentClass, studentsData]);
       
-      // 提取自己当前的数据状态（用于判断前端锁定互斥）
       const meData = useMemo(() => currentStudents.find(s => s.studentId === currentStudentId), [currentStudents, currentStudentId]);
       const isAppLocked = !isReadOnly && meData?.isAiProcessing === true;
       const isFormDisabled = isReadOnly || isAppLocked;
@@ -367,12 +366,11 @@
             className: currentClass, name: currentUser, studentId: currentStudentId,
             originalGrade: formOriginalGrade, bonusItems: formBonusItems, 
             lastModified: new Date().toLocaleString(),
-            lastUpdateTime: Date.now(), // 写入乐观锁时间戳
-            isAiProcessing: false, // 提交时默认重置AI处理状态
+            lastUpdateTime: Date.now(),
+            isAiProcessing: false,
             modCount: nextModCount
           };
 
-          // 核心拦截：计算单次数据 Payload 大小，防穿透 1MB 限制
           const payloadSize = new Blob([JSON.stringify(payload)]).size;
           if (payloadSize > 900 * 1024) {
              return showToast("⚠️ 数据总大小超出 900KB 限制！请删减部分图片或重新上传更小的截图。", 'error');
@@ -444,26 +442,23 @@
           
           const studentDocRef = doc(db, 'artifacts', globalAppId, 'public', 'data', 'students', `${currentClass}_${s.studentId}`);
 
-          // 1. 设置 Processing 状态锁定前端
+          // 乐观锁：锁定状态并阻止并发
           await setDoc(studentDocRef, { isAiProcessing: true }, { merge: true });
 
-          // 2. 跑 AI 审核逻辑
           const items = await processAI(s.bonusItems, s.name);
 
-          // 3. 防篡改版本校验锁：拉取最新数据校验
           try {
             const freshSnap = await getDoc(studentDocRef);
             if (freshSnap.exists()) {
               const freshData = freshSnap.data();
               if (freshData.lastUpdateTime && freshData.lastUpdateTime !== s.lastUpdateTime) {
-                // 如果发现锁时间戳不匹配，说明学生在这几秒利用强制刷新或其他端改了数据，立即抛弃 AI 结果
+                // 如果发现锁时间戳不匹配，说明学生在这几秒利用强制刷新改了数据，立即抛弃 AI 结果
                 const resetItems = freshData.bonusItems.map(item => ({
                   ...item, aiStatus: 'Pending', aiReason: '数据在审核期间被修改，AI审核结果已废弃，需重新排队审核'
                 }));
                 await setDoc(studentDocRef, { ...freshData, bonusItems: resetItems, isAiProcessing: false });
                 showToast(`检测到 ${s.name} 数据在审核中发生变动，已废弃本次结果。`, 'error');
               } else {
-                // 安全回写
                 await setDoc(studentDocRef, { ...freshData, bonusItems: items, isAiProcessing: false });
               }
             }
@@ -476,7 +471,7 @@
         setIsBatching(false); showToast("批量流水线审核完成！", 'success');
       };
 
-      // 导出简表
+      // 导出简表：保留修改次数列 (总计 9 列)
       const exportSimpleTable = () => {
         if (!rankedStudents.length) return showToast("当前没有数据可导出", 'error');
         const aoa = [[`${currentClass}班综合测评简表`], [], ["排名", "姓名", "学号", "基础成绩", "申报加分总计", "折算加分(Max 3)", "最终总分", "修改次数", "异常状态"]];
@@ -489,7 +484,7 @@
         XLSX.writeFile(wb, `${currentClass}_专业综测简表.xlsx`);
       };
 
-      // 导出明细表
+      // 导出明细表：保留修改次数列 (总计 10 列)
       const exportTable = () => {
         if (!rankedStudents.length) return showToast("当前没有数据可导出", 'error');
         const aoa = [[`${currentClass}综测加分明细表`], [], ["排名", "姓名", "学号", "原始成绩", "参与活动", "活动分数", "总申报分", "折算加分", "修改次数", "AI审核状态"]];
@@ -535,7 +530,6 @@
           };
           reader.readAsDataURL(file);
         } else {
-          // 极致压缩：宽度降至 600，质量降至 0.3，彻底防止长图导致的超量报错
           compressImage(file, (base64) => {
             setPdfFile({ name: file.name, base64: base64.split(',')[1], mimeType: file.type });
             showToast("图片处理完毕，请点击下方【保存】生效！", 'success');
@@ -552,7 +546,6 @@
             payload.rulesFileMimeType = pdfFile.mimeType || 'application/pdf';
           }
           
-          // 全局规则文件拦截测算
           const payloadSize = new Blob([JSON.stringify(payload)]).size;
           if (payloadSize > 900 * 1024) {
              return showToast("⚠️ 规则文件总大小超出 900KB 限制！请压缩或精简内容后重试。", 'error');
@@ -602,6 +595,7 @@
             </div>
           )}
           
+          {/* 万字级保姆系统使用说明 */}
           {showInstructions && (
             <div className="fixed inset-0 z-[200] bg-slate-900/50 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-200">
               <div className="bg-white rounded-2xl p-6 md:p-8 max-w-3xl w-full shadow-2xl max-h-[90vh] overflow-y-auto transform scale-100 animate-in zoom-in-95 duration-200">
