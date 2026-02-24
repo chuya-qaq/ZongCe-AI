@@ -1,0 +1,816 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="format-detection" content="telephone=no">
+  <title>综合测评与奖学金管理系统</title>
+  
+  <!-- 全局错误捕捉器：防止无提示白屏 -->
+  <script>
+    window.addEventListener('error', function(e) {
+      if (e.message && e.message.includes('Script error')) return; // 忽略无用的跨域警告
+      document.body.innerHTML += '<div style="position:fixed;top:0;left:0;width:100%;background:#fee2e2;color:#991b1b;padding:20px;z-index:99999;font-family:sans-serif;border-bottom:2px solid #f87171;"><b>系统加载异常：</b>' + e.message + '<br><small>排查建议：请检查网络是否稳定，或 Firebase 配置是否正确。</small></div>';
+    });
+  </script>
+
+  <!-- 核心依赖库 (全部采用国内极速或高可用 CDN) -->
+  <script src="[https://cdn.tailwindcss.com](https://cdn.tailwindcss.com)" crossorigin="anonymous"></script>
+  <script src="[https://cdn.staticfile.net/babel-standalone/7.23.6/babel.min.js](https://cdn.staticfile.net/babel-standalone/7.23.6/babel.min.js)" crossorigin="anonymous"></script>
+
+  <!-- ES Modules 映射表 (增加依赖锁定，防止加载白屏) -->
+  <script type="importmap">
+  {
+    "imports": {
+      "react": "[https://esm.sh/react@18.2.0](https://esm.sh/react@18.2.0)",
+      "react-dom/client": "[https://esm.sh/react-dom@18.2.0/client](https://esm.sh/react-dom@18.2.0/client)",
+      "lucide-react": "[https://esm.sh/lucide-react@0.263.1?external=react](https://esm.sh/lucide-react@0.263.1?external=react)",
+      "firebase/app": "[https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js](https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js)",
+      "firebase/auth": "[https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js](https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js)",
+      "firebase/firestore": "[https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js](https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js)",
+      "xlsx": "[https://esm.sh/xlsx@0.18.5](https://esm.sh/xlsx@0.18.5)"
+    }
+  }
+  </script>
+  <style>
+    @keyframes slow-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+    .animate-slow-spin { animation: slow-spin 10s linear infinite; }
+    @keyframes bounce-slow { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-10px); } }
+    .animate-bounce-slow { animation: bounce-slow 3s ease-in-out infinite; }
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
+    ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+  </style>
+</head>
+<body class="bg-slate-50 min-h-screen text-slate-900 font-sans selection:bg-indigo-100">
+  <div id="root"></div>
+
+  <!-- 明确指定 presets="react" 保证 Babel 正确编译 JSX 而不破坏 Import -->
+  <script type="text/babel" data-type="module" data-presets="react">
+    import React, { useState, useEffect, useMemo, useRef } from 'react';
+    import { createRoot } from 'react-dom/client';
+    import { 
+      Trophy, Users, BookOpen, PlusCircle, Trash2, Save, 
+      UploadCloud, AlertCircle, CheckCircle, Clock, Edit3, 
+      Sparkles, FileDown, Eye, FileText, AlertTriangle, LogOut, Loader2, ShieldCheck, ListOrdered, KeyRound, Fingerprint, PlayCircle, Settings, ChevronRight, Search
+    } from 'lucide-react';
+    import { initializeApp } from 'firebase/app';
+    import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
+    import { getFirestore, doc, setDoc, collection, onSnapshot, deleteDoc, query, getDoc } from 'firebase/firestore';
+    import * as XLSX from 'xlsx';
+
+    // ==========================================
+    // 🚀 数据库配置区
+    // ==========================================
+    const localFirebaseConfig = {
+      apiKey: "在此填入你的 apiKey",
+      authDomain: "在此填入你的 authDomain",
+      projectId: "在此填入你的 projectId",
+      storageBucket: "在此填入你的 storageBucket",
+      messagingSenderId: "在此填入你的 messagingSenderId",
+      appId: "在此填入你的 appId"
+    };
+
+    let envConfig = null;
+    if (typeof __firebase_config !== 'undefined' && __firebase_config) {
+      try {
+        envConfig = JSON.parse(__firebase_config);
+      } catch (e) {
+        console.error("Firebase 配置解析异常:", e);
+      }
+    }
+    
+    const finalConfig = envConfig || localFirebaseConfig;
+    const isConfigValid = finalConfig && finalConfig.apiKey && !finalConfig.apiKey.includes("在此填入");
+
+    let app, auth, db;
+    if (isConfigValid) {
+      try {
+        app = initializeApp(finalConfig);
+        auth = getAuth(app);
+        db = getFirestore(app);
+      } catch (e) {
+        console.error("Firebase 初始化失败:", e);
+      }
+    }
+    
+    const globalAppId = (typeof __app_id !== 'undefined' && __app_id) ? __app_id : 'zongce-pro-system';
+    
+    // ==========================================
+    // 🤖 AI 引擎配置与密钥
+    // ==========================================
+    const aiApiKey = "sk-gjzyakonhvumcdbirrvpghlyplwyxbxqthsqefoaqonljkmw";
+
+    const fetchWithRetry = async (url, options, retries = 3) => {
+      const delays = [1000, 2000, 4000];
+      for (let i = 0; i < retries; i++) {
+        try {
+          const response = await fetch(url, options);
+          if (!response.ok) throw new Error(`HTTP 状态码异常: ${response.status}`);
+          return await response.json();
+        } catch (err) {
+          if (i === retries - 1) throw err;
+          await new Promise(res => setTimeout(res, delays[i]));
+        }
+      }
+    };
+
+    // ==========================================
+    // ⚙️ 拦截引导界面 (完全独立，防止污染 React Hooks 渲染树)
+    // ==========================================
+    const ConfigErrorUI = () => (
+      <div className="min-h-screen flex items-center justify-center p-6 bg-slate-900 font-sans">
+        <div className="max-w-xl w-full bg-white rounded-3xl p-10 shadow-2xl border border-white/20">
+          <div className="flex justify-center mb-8">
+            <div className="p-6 bg-amber-50 rounded-full border-4 border-amber-100">
+              <Settings className="w-16 h-16 text-amber-600 animate-slow-spin" />
+            </div>
+          </div>
+          <h2 className="text-3xl font-black text-center mb-4 text-slate-800">系统就绪，等待配置</h2>
+          <p className="text-slate-500 text-center text-sm mb-10 leading-relaxed">检测到您正在直接打开应用。为了启用云端存储和 AI 审核，请配置您自己的 Firebase 参数。</p>
+          <div className="space-y-4">
+            <div className="flex gap-4 p-4 bg-slate-50 rounded-2xl border border-slate-200">
+              <div className="w-8 h-8 bg-indigo-600 text-white rounded-full flex items-center justify-center font-bold flex-shrink-0">1</div>
+              <p className="text-sm text-slate-600">访问 <b>firebase.google.com</b> 创建免费项目，并开启 Firestore 数据库与匿名登录 (Anonymous Auth)。</p>
+            </div>
+            <div className="flex gap-4 p-4 bg-slate-50 rounded-2xl border border-slate-200">
+              <div className="w-8 h-8 bg-indigo-600 text-white rounded-full flex items-center justify-center font-bold flex-shrink-0">2</div>
+              <p className="text-sm text-slate-600">获取 Web SDK 配置，并替换 <b>index.html</b> 中第 <b>59行</b> 附近的 <b>localFirebaseConfig</b> 字典内容。</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+
+    // ==========================================
+    // 🏆 系统主控中心
+    // ==========================================
+    const App = () => {
+      // --- 全局状态定义 ---
+      const [user, setUser] = useState(null);
+      const [isDbReady, setIsDbReady] = useState(false);
+      const [dbError, setDbError] = useState('');
+      const [classesData, setClassesData] = useState({});
+      const [studentsData, setStudentsData] = useState([]);
+      const [currentClass, setCurrentClass] = useState(null);
+      const [currentUser, setCurrentUser] = useState(''); 
+      const [currentStudentId, setCurrentStudentId] = useState(''); 
+      const [currentUserRole, setCurrentUserRole] = useState(''); 
+      const [viewState, setViewState] = useState('lobby'); 
+      const [activeTab, setActiveTab] = useState('ranking'); 
+      const [newClassNameInput, setNewClassNameInput] = useState('');
+      const [newClassAdminPwdInput, setNewClassAdminPwdInput] = useState('');
+      const [newClassRoster, setNewClassRoster] = useState([]);
+      const [isAiParsingRoster, setIsAiParsingRoster] = useState(false); 
+      const [selectedClassToJoin, setSelectedClassToJoin] = useState('');
+      const [loginRoleTab, setLoginRoleTab] = useState('student'); 
+      const [userNameInput, setUserNameInput] = useState('');
+      const [studentIdInput, setStudentIdInput] = useState('');
+      const [adminPwdInput, setAdminPwdInput] = useState('');
+      const [formName, setFormName] = useState('');
+      const [formOriginalGrade, setFormOriginalGrade] = useState('');
+      const [formBonusItems, setFormBonusItems] = useState([]);
+      const [isReadOnly, setIsReadOnly] = useState(false); 
+      const [aiRulesText, setAiRulesText] = useState('');
+      const [pdfFile, setPdfFile] = useState({ name: '', base64: '', mimeType: '' });
+      const [isAiReviewing, setIsAiReviewing] = useState(false);
+      const [isBatching, setIsBatching] = useState(false);
+      const [batchProgress, setBatchProgress] = useState('');
+      const fileInputRef = useRef(null);
+      const [previewImage, setPreviewImage] = useState(null); 
+      const [toast, setToast] = useState({ show: false, message: '', type: 'success' });
+      const [confirmDialog, setConfirmDialog] = useState({ show: false, message: '', onConfirm: null });
+
+      // --- 核心同步逻辑 ---
+      useEffect(() => {
+        const initAuth = async () => {
+          try {
+            if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+              await signInWithCustomToken(auth, __initial_auth_token);
+            } else {
+              await signInAnonymously(auth);
+            }
+          } catch (error) { 
+            console.error("鉴权拦截:", error);
+            setDbError('云端节点验证被拒绝，请确认 Firebase 后台已开启 匿名登录提供方(Anonymous Auth)。'); 
+          }
+        };
+        initAuth();
+        const unsubscribe = onAuthStateChanged(auth, setUser);
+        return () => unsubscribe();
+      }, []);
+
+      useEffect(() => {
+        if (!user || !db) return;
+        const classesRef = collection(db, 'artifacts', globalAppId, 'public', 'data', 'classes');
+        const unsubClasses = onSnapshot(classesRef, (snapshot) => {
+          const newClasses = {};
+          snapshot.forEach(doc => { newClasses[doc.id] = doc.data(); });
+          setClassesData(newClasses);
+          setDbError('');
+        }, (err) => {
+          console.error("数据库快照异常:", err);
+          setDbError('数据库连接异常：请检查 Firestore 规则(Rules)是否设置为允许读写访问。');
+        });
+        
+        const studentsRef = collection(db, 'artifacts', globalAppId, 'public', 'data', 'students');
+        const unsubStudents = onSnapshot(studentsRef, (snapshot) => {
+          const newStudents = [];
+          snapshot.forEach(doc => { newStudents.push({ id: doc.id, ...doc.data() }); });
+          setStudentsData(newStudents);
+          setIsDbReady(true);
+        });
+        return () => { unsubClasses(); unsubStudents(); };
+      }, [user]);
+
+      // --- 业务工具逻辑 ---
+      const showToast = (message, type = 'success') => {
+        setToast({ show: true, message, type });
+        setTimeout(() => setToast({ show: false, message: '', type: 'success' }), 3500);
+      };
+
+      const compressImage = (file, callback) => {
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          const img = new Image();
+          img.onload = () => {
+            const canvas = document.createElement('canvas');
+            const MAX_WIDTH = 1200;
+            let width = img.width; let height = img.height;
+            if (width > MAX_WIDTH) { height = Math.round((height * MAX_WIDTH) / width); width = MAX_WIDTH; }
+            canvas.width = width; canvas.height = height;
+            canvas.getContext('2d').drawImage(img, 0, 0, width, height);
+            callback(canvas.toDataURL('image/jpeg', 0.65));
+          };
+          img.src = e.target.result;
+        };
+        reader.readAsDataURL(file);
+      };
+
+      const currentStudents = useMemo(() => studentsData.filter(s => s.className === currentClass), [currentClass, studentsData]);
+      
+      const rankedStudents = useMemo(() => {
+        if (currentStudents.length === 0) return [];
+        const withRaw = currentStudents.map(s => ({
+          ...s, rawBonus: s.bonusItems?.reduce((sum, item) => sum + (parseFloat(item.points) || 0), 0) || 0
+        }));
+        const maxRaw = Math.max(...withRaw.map(s => s.rawBonus), 0);
+        return withRaw.map(s => {
+          const scaled = maxRaw > 0 ? (s.rawBonus / maxRaw) * 3 : 0;
+          return {
+            ...s, scaledBonus: scaled.toFixed(4),
+            totalScore: (parseFloat(s.originalGrade || 0) + scaled).toFixed(2),
+            hasAiWarning: s.bonusItems?.some(i => i.aiStatus === 'Reject' || i.aiStatus === 'Manual Review' || !i.aiStatus || i.aiStatus === 'Pending')
+          };
+        }).sort((a, b) => b.totalScore - a.totalScore);
+      }, [currentStudents]);
+
+      // --- 多模态 AI 解析名单引擎 ---
+      const handleRosterUpload = async (e) => {
+        const file = e.target.files[0]; if (!file) return;
+        setIsAiParsingRoster(true); showToast("正在连接视觉大模型，请耐心等待 AI 结构化数据...", 'success');
+        try {
+          let textPayload = [];
+          if (file.type.startsWith('image/')) {
+            const b64 = await new Promise(r => { const reader = new FileReader(); reader.onload = () => r(reader.result); reader.readAsDataURL(file); });
+            textPayload = [{ type: "text", text: "提取图片中的所有学生姓名和学号对。必须且仅输出合法的 JSON 数组，形如 [{\"name\":\"张三\",\"studentId\":\"2023001\"}]。绝对禁止输出任何多余的解释文字！" }, { type: "image_url", image_url: { url: b64 } }];
+          } else {
+            const buffer = await file.arrayBuffer();
+            const wb = XLSX.read(buffer);
+            const csv = XLSX.utils.sheet_to_csv(wb.Sheets[wb.SheetNames[0]]);
+            // 剥离复杂模板字符串中的干扰符号，改为安全加号拼接
+            const safePrompt = "分析以下表格数据，提取所有的姓名和学号对。\n必须且仅输出合法的 JSON 数组格式，绝对禁止在开头或结尾包含类似 markdown 的代码块符号等任何说明文本：\n" + csv.substring(0, 10000);
+            textPayload = [{ type: "text", text: safePrompt }];
+          }
+          const res = await fetchWithRetry(`https://api.siliconflow.cn/v1/chat/completions`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${aiApiKey}` },
+            body: JSON.stringify({ model: "THUDM/GLM-4.1V-9B-Thinking", messages: [{ role: "user", content: textPayload }] })
+          });
+          
+          let rawContent = res.choices?.[0]?.message?.content || "";
+          
+          // 强效正则剔除：彻底切除 Thinking 模型发散的思路与多余符号
+          let cleanContent = rawContent.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+          const jsonArrayMatch = cleanContent.match(/\[[\s\S]*\]/);
+          
+          let list = [];
+          if (jsonArrayMatch) {
+            list = JSON.parse(jsonArrayMatch[0]);
+          } else {
+            cleanContent = cleanContent.replace(/```json/gi, '').replace(/```/g, '').trim();
+            const parsed = JSON.parse(cleanContent);
+            list = Array.isArray(parsed) ? parsed : (parsed.students || parsed.data || []);
+          }
+
+          if (list.length === 0) throw new Error("匹配失败：未发现任何有效的人员矩阵数据");
+
+          setNewClassRoster(list);
+          showToast(`视觉解析成功！已构建包含 ${list.length} 名学生的身份指纹库。`, 'success');
+        } catch (error) { 
+          console.error("AI解析异常截断:", error);
+          showToast(`导入遇阻：无法识别表格或图片结构（确保画质清晰且包含姓名学号），请重试`, 'error'); 
+        }
+        finally { setIsAiParsingRoster(false); e.target.value = ''; }
+      };
+
+      const handleCreateClass = async () => {
+        const cName = newClassNameInput.trim();
+        if (!cName || classesData[cName]) return showToast("项目名称为空或产生名称冲突", 'error');
+        if (!newClassAdminPwdInput.trim()) return showToast("超级审计密码为必填项", 'error');
+        if (newClassRoster.length === 0) return showToast("系统安全锁：强制要求必须在导入花名册后才能开放创建！", 'error');
+
+        try {
+          await setDoc(doc(db, 'artifacts', globalAppId, 'public', 'data', 'classes', cName), {
+            rulesText: "暂无附加推演规则", rulesPdfBase64: "", rulesPdfName: "", rulesFileMimeType: "application/pdf", 
+            adminPwd: newClassAdminPwdInput.trim(), roster: newClassRoster
+          });
+          setNewClassNameInput(''); setNewClassAdminPwdInput(''); setNewClassRoster([]);
+          showToast("评定班级节点创建成功", 'success');
+        } catch { showToast("握手失败：数据同步至云端受阻", 'error'); }
+      };
+
+      const initiateJoinClass = (cName) => {
+        setSelectedClassToJoin(cName);
+        setUserNameInput(''); setStudentIdInput(''); setAdminPwdInput('');
+        setLoginRoleTab('student'); setViewState('login');
+      };
+
+      const handleLogin = () => {
+        const classData = classesData[selectedClassToJoin];
+        if (!classData) return showToast("获取云端节点数据时发生异常", 'error');
+
+        if (loginRoleTab === 'student') {
+          if (!userNameInput.trim() || !studentIdInput.trim()) return showToast("身份比对参数不允许为空", 'error');
+          
+          // 极度严谨的类型转换匹配，防止数字与字符串不一致导致被拒
+          const isMatch = (classData.roster || []).find(r => 
+              String(r.name).trim() === userNameInput.trim() && 
+              String(r.studentId).trim() === studentIdInput.trim()
+          );
+
+          if (!isMatch) return showToast("防冒名拦截：您的信息未被收录在本班的原始花名册中！", 'error');
+          
+          setCurrentUser(userNameInput.trim()); setCurrentStudentId(studentIdInput.trim()); setCurrentUserRole('student');
+        } else {
+          if (adminPwdInput.trim() !== classData.adminPwd) return showToast("最高指令错误，拒绝访问", 'error');
+          setCurrentUser('核心审核员'); setCurrentStudentId('ADMIN_ROOT'); setCurrentUserRole('admin');
+        }
+        
+        setAiRulesText(classData.rulesText || ''); 
+        setPdfFile({ name: classData.rulesPdfName || '', base64: classData.rulesPdfBase64 || '', mimeType: classData.rulesFileMimeType || 'application/pdf' });
+        setViewState('dashboard');
+      };
+
+      const handleLeaveClass = () => {
+        setCurrentClass(null); setCurrentUser(''); setCurrentStudentId(''); setCurrentUserRole('');
+        setViewState('lobby');
+      };
+
+      const handleDeleteClassByAdmin = () => {
+        setConfirmDialog({
+          show: true, message: "⚠️ 严重级警告：此操作将执行彻底的数据清洗，清除该班级架构及其包含的所有学生申报记录档案。数据销毁后永久无法找回，确认要执行降维打击吗？",
+          onConfirm: async () => {
+            try {
+              const studentsToDelete = studentsData.filter(s => s.className === currentClass);
+              for (const s of studentsToDelete) await deleteDoc(doc(db, 'artifacts', globalAppId, 'public', 'data', 'students', s.id));
+              await deleteDoc(doc(db, 'artifacts', globalAppId, 'public', 'data', 'classes', currentClass));
+              handleLeaveClass(); setConfirmDialog({ show: false, message: '', onConfirm: null });
+              showToast("物理销毁完毕，班级节点已拔除", 'success');
+            } catch (error) { showToast("擦除指令受限", 'error'); }
+          }
+        });
+      };
+
+      const handleSaveStudent = async () => {
+        if (!formOriginalGrade) return showToast("基准参照成绩不可留空", 'error');
+        try {
+          await setDoc(doc(db, 'artifacts', globalAppId, 'public', 'data', 'students', `${currentClass}_${currentStudentId}`), {
+            className: currentClass, name: currentUser, studentId: currentStudentId,
+            originalGrade: formOriginalGrade, bonusItems: formBonusItems, lastModified: new Date().toLocaleString()
+          });
+          showToast("私有卷宗保存成功，已汇入中央队列等待 AI 统一查验", 'success'); setActiveTab('ranking');
+        } catch { showToast("云端流控异常，写入受阻", 'error'); }
+      };
+
+      // 核心推演引擎
+      const processAI = async (items, studentName) => {
+        const updated = [...items];
+        const rules = classesData[currentClass]?.rulesText || '';
+        const pdf = classesData[currentClass]?.rulesPdfBase64 || '';
+        const mime = classesData[currentClass]?.rulesFileMimeType || 'application/pdf';
+        
+        for (let i = 0; i < updated.length; i++) {
+          const it = updated[i];
+          if (it.aiStatus !== 'Pending' && it.aiStatus) continue;
+          if (!it.points || !it.description) continue;
+
+          // 纯字符串拼接，绕过 Babel 编译器可能的嵌套转义干扰
+          const prompt = "你是一个铁面无私的综测审核AI。\n" +
+            "【受审人】: " + studentName + "\n" +
+            "【评定法则】: " + rules + "\n" +
+            "【加分明细】: 申报加分 " + it.points + " 分; 归属分类: " + it.type + "; 描述事实: " + it.description + "\n" +
+            "【佐证材料】: " + (it.materialName ? "已附证明图片(务必交叉比对图片内容与描述内容的一致性)" : "查无凭证") + "\n\n" +
+            "【判决铁律】:\n" +
+            "1. 防特权滥用：如果法则赋予特定人特权（例如允许张三免交材料），你必须核对上方的【受审人】名字。如果是其他人强行套用，必定严词驳回！\n" +
+            "2. 证据闭环原则：若没有任何附件材料，且查无法则的特例豁免，一律给出驳回(Reject)或转人工(Manual Review)裁定。\n" +
+            "3. 绝对输出指令：你的回答必须并且只能是一个合法的 JSON 对象，不包含任何外部 Markdown 记号：\n" +
+            "{\"status\": \"Approve\"|\"Reject\"|\"Manual Review\", \"reason\": \"在此填写15字以内的中文裁决原因\"}";
+
+          try {
+            const content = [{ type: "text", text: prompt }];
+            if (pdf) content.push({ type: "image_url", image_url: { url: `data:${mime};base64,${pdf}` } });
+            if (it.materialBase64) content.push({ type: "image_url", image_url: { url: it.materialBase64 } });
+            
+            const res = await fetchWithRetry(`https://api.siliconflow.cn/v1/chat/completions`, {
+              method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${aiApiKey}` },
+              body: JSON.stringify({ model: "THUDM/GLM-4.1V-9B-Thinking", messages: [{ role: "user", content }] })
+            });
+            
+            let rawResult = res.choices?.[0]?.message?.content || '{"status": "Manual Review", "reason": "API数据层干涸"}';
+            let cleanResult = rawResult.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+            const jsonObjMatch = cleanResult.match(/\{[\s\S]*\}/);
+            let decision;
+            if (jsonObjMatch) {
+                decision = JSON.parse(jsonObjMatch[0]);
+            } else {
+                decision = JSON.parse(cleanResult.replace(/```json/gi, '').replace(/```/g, '').trim());
+            }
+            updated[i].aiStatus = decision.status; updated[i].aiReason = decision.reason;
+          } catch (e) { 
+            console.error("AI 视觉推演单项熔断:", e);
+            updated[i].aiStatus = 'Manual Review'; updated[i].aiReason = '上游视觉模型限流或请求残缺'; 
+          }
+        }
+        return updated;
+      };
+
+      const handleBatchAudit = async () => {
+        const targets = currentStudents.filter(s => s.bonusItems?.some(i => i.aiStatus === 'Pending' || !i.aiStatus));
+        if (!targets.length) return showToast("扫描完毕：当前池中无任何待办判定请求", 'success');
+        
+        setIsBatching(true);
+        for (let i = 0; i < targets.length; i++) {
+          const s = targets[i]; 
+          setBatchProgress(`AI 正在高维推演目标: ${s.name} (${i+1}/${targets.length})`);
+          const items = await processAI(s.bonusItems, s.name);
+          await setDoc(doc(db, 'artifacts', globalAppId, 'public', 'data', 'students', `${currentClass}_${s.studentId}`), { ...s, bonusItems: items });
+          // 防平台 API 限流：流水线间隔强制休眠降频 2.5 秒
+          if (i < targets.length - 1) await new Promise(r => setTimeout(r, 2500));
+        }
+        setIsBatching(false); showToast("全班流水线深度核验任务已圆满竣工", 'success');
+      };
+
+      // --- 专业表格导出 ---
+      const exportTable = () => {
+        if (!rankedStudents.length) return showToast("矩阵池空缺，没有可导出的数据", 'error');
+        const aoa = [[`${currentClass}班综合素质测评明细表`], [], ["排名", "姓名", "学号", "基础成绩", "活动描述", "申报单项", "申报总计", "规则折合分", "AI终审定调"]];
+        rankedStudents.forEach((s, idx) => {
+          const items = s.bonusItems?.length ? s.bonusItems : [{ description: '无加分记录', points: 0, aiStatus: 'N/A' }];
+          items.forEach((it, i) => {
+            aoa.push([ i===0?idx+1:'', i===0?s.name:'', i===0?s.studentId:'', i===0?s.originalGrade:'', it.description, it.points, i===0?s.rawBonus:'', i===0?s.scaledBonus:'', it.aiStatus ]);
+          });
+        });
+        const ws = XLSX.utils.aoa_to_sheet(aoa); ws['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 8 } }];
+        const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, "数据清单");
+        XLSX.writeFile(wb, `${currentClass}_专业综测统计档案.xlsx`);
+      };
+
+      // --- 表单查看与规则保存 ---
+      const initMyApplication = () => {
+        const me = currentStudents.find(s => s.studentId === currentStudentId);
+        setIsReadOnly(false); setFormName(currentUser);
+        if (me) { setFormOriginalGrade(me.originalGrade); setFormBonusItems(me.bonusItems || []); } 
+        else { setFormOriginalGrade(''); setFormBonusItems([]); }
+        setActiveTab('application');
+      };
+
+      const loadStudentFormReadOnly = (student) => {
+        if (student.studentId === currentStudentId) return initMyApplication();
+        setFormName(student.name); setFormOriginalGrade(student.originalGrade); setFormBonusItems(student.bonusItems || []);
+        setIsReadOnly(true); setActiveTab('application');
+      };
+
+      const updateBonusItem = (id, field, value) => {
+        setFormBonusItems(prev => prev.map(item => item.id === id ? { ...item, [field]: value, aiStatus: 'Pending', aiReason: '' } : item));
+      };
+      const removeBonusItem = (id) => { setFormBonusItems(prev => prev.filter(item => item.id !== id)); };
+
+      const handleRuleFileUpload = (e) => {
+        const file = e.target.files[0]; if (!file) return;
+        if (!file.type.startsWith('image/') && file.type !== 'application/pdf') return showToast("非法格式：系统仅支持接纳 PDF 或图像规范证明", 'error'); 
+        if (file.size > 2 * 1024 * 1024) return showToast("出于效能约束，规则文件配额限制在 2MB 以内", 'error'); 
+        const reader = new FileReader();
+        reader.onload = (ev) => setPdfFile({ name: file.name, base64: ev.target.result.split(',')[1], mimeType: file.type });
+        reader.readAsDataURL(file);
+      };
+
+      const saveAiRules = async () => {
+        try {
+          await setDoc(doc(db, 'artifacts', globalAppId, 'public', 'data', 'classes', currentClass), { 
+            rulesText: aiRulesText, rulesPdfName: pdfFile.name, rulesPdfBase64: pdfFile.base64, rulesFileMimeType: pdfFile.mimeType || 'application/pdf'
+          }, { merge: true });
+          showToast("AI 裁决核心树已重构并向全网同步广播", 'success');
+        } catch (error) { showToast("规则锚点固化异常", 'error'); }
+      };
+
+      const GlobalModals = () => (
+        <React.Fragment>
+          {toast.show && (
+            <div className={`fixed top-6 right-6 z-[100] flex items-center gap-3 px-5 py-3.5 rounded-2xl shadow-2xl animate-in slide-in-from-top-4 duration-300 ${toast.type === 'error' ? 'bg-rose-50 border border-rose-200 text-rose-800' : 'bg-emerald-50 border border-emerald-200 text-emerald-800'}`}>
+              {toast.type === 'error' ? <AlertCircle className="w-5 h-5" /> : <CheckCircle className="w-5 h-5" />}
+              <span className="font-bold text-sm">{toast.message}</span>
+            </div>
+          )}
+          {previewImage && (
+            <div className="fixed inset-0 z-[110] bg-slate-900/90 backdrop-blur-md flex items-center justify-center p-6 cursor-zoom-out" onClick={() => setPreviewImage(null)}>
+              <img src={previewImage} className="max-w-full max-h-[85vh] rounded-2xl shadow-2xl border border-white/10" onClick={e => e.stopPropagation()} />
+            </div>
+          )}
+          {isBatching && (
+            <div className="fixed inset-0 z-[120] bg-slate-900/80 backdrop-blur-md flex items-center justify-center p-4">
+               <div className="bg-white p-10 rounded-[2.5rem] shadow-2xl flex flex-col items-center max-w-sm w-full border border-indigo-50">
+                  <div className="w-20 h-20 mb-8 relative">
+                    <div className="absolute inset-0 border-4 border-indigo-100 rounded-full"></div>
+                    <div className="absolute inset-0 border-4 border-indigo-600 rounded-full border-t-transparent animate-spin"></div>
+                    <Sparkles className="absolute inset-0 m-auto w-8 h-8 text-indigo-600 animate-pulse" />
+                  </div>
+                  <h3 className="text-2xl font-black text-slate-800 mb-2 tracking-tighter">模型深层认知激活中</h3>
+                  <p className="text-slate-400 text-sm mb-8 text-center leading-relaxed font-medium">系统正在排队解构全班每一位成员的图文佐证材料...</p>
+                  <p className="text-sm font-black text-indigo-700 bg-indigo-50 px-6 py-2 rounded-full tracking-tight">{batchProgress}</p>
+               </div>
+            </div>
+          )}
+          {confirmDialog.show && (
+            <div className="fixed inset-0 z-[100] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
+              <div className="bg-white rounded-3xl p-8 max-w-sm w-full shadow-2xl">
+                <h3 className="text-xl font-black text-slate-800 mb-3 flex items-center gap-2"><AlertTriangle className="w-6 h-6 text-rose-500" /> 超级权限警告指令</h3>
+                <p className="text-slate-500 text-sm mb-8 font-medium leading-relaxed">{confirmDialog.message}</p>
+                <div className="flex gap-3">
+                  <button onClick={() => setConfirmDialog({show:false})} className="flex-1 py-3 text-sm font-bold text-slate-400 hover:bg-slate-50 rounded-xl transition-all">收起干预</button>
+                  <button onClick={confirmDialog.onConfirm} className="flex-1 py-3 text-sm font-bold text-white bg-rose-600 hover:bg-rose-700 rounded-xl shadow-lg shadow-rose-200 transition-all">果断粉碎</button>
+                </div>
+              </div>
+            </div>
+          )}
+        </React.Fragment>
+      );
+
+      if (viewState === 'lobby') {
+        return (
+          <div className="min-h-screen flex items-center justify-center p-4 lg:p-10 relative overflow-hidden bg-slate-100">
+            <GlobalModals />
+            <div className="absolute -top-24 -left-24 w-96 h-96 bg-indigo-500/10 rounded-full blur-3xl pointer-events-none"></div>
+            <div className="absolute -bottom-24 -right-24 w-96 h-96 bg-indigo-500/10 rounded-full blur-3xl pointer-events-none"></div>
+            <div className="bg-white rounded-[3rem] shadow-2xl p-10 lg:p-16 w-full max-w-6xl z-10 border border-white relative">
+              <div className="flex flex-col items-center mb-16">
+                <div className="p-5 bg-indigo-600 rounded-3xl mb-6 shadow-xl shadow-indigo-200 text-white animate-bounce-slow">
+                  <Trophy className="w-12 h-12" />
+                </div>
+                <h1 className="text-4xl font-black text-slate-800 tracking-tighter">综合测评与奖学金管理系统</h1>
+                <p className="text-slate-400 mt-4 font-bold text-lg">智领评选 · 动态同步 · 机器视觉查验</p>
+              </div>
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-12">
+                <div className="bg-slate-50 rounded-[2.5rem] p-8 border border-slate-200">
+                  <h2 className="text-2xl font-black text-slate-800 mb-8 flex items-center gap-3">
+                    <Users className="w-7 h-7 text-indigo-600" /> 接入现有评定枢纽
+                  </h2>
+                  <div className="space-y-4 overflow-y-auto pr-2 max-h-[400px]">
+                    {Object.keys(classesData).length === 0 ? (
+                      <div className="text-center py-20 text-slate-300 font-bold italic">目前大厅未发现处于激活状态的班级节点...</div>
+                    ) : (
+                      Object.keys(classesData).map(cName => {
+                        const count = studentsData.filter(s => s.className === cName).length;
+                        return (
+                          <button key={cName} onClick={() => initiateJoinClass(cName)} className="w-full text-left bg-white px-6 py-5 rounded-[1.5rem] border border-slate-200 hover:border-indigo-500 hover:shadow-xl transition-all flex justify-between items-center group">
+                            <div>
+                              <span className="font-black text-slate-700 block text-xl group-hover:text-indigo-600">{cName}</span>
+                              <span className="text-xs text-slate-400 font-bold flex items-center gap-2 mt-1 uppercase tracking-widest"><Fingerprint className="w-3.5 h-3.5"/> 触发档案匹配流</span>
+                            </div>
+                            <div className="text-right">
+                              <div className="text-indigo-600 font-black text-lg">{count}</div>
+                              <div className="text-[10px] text-slate-400 font-bold uppercase">Submitted</div>
+                            </div>
+                          </button>
+                        );
+                      })
+                    )}
+                  </div>
+                </div>
+                <div className="bg-gradient-to-br from-indigo-50 to-white rounded-[2.5rem] p-8 border border-indigo-100 shadow-sm">
+                  <h2 className="text-2xl font-black text-slate-800 mb-8 flex items-center gap-3"><ShieldCheck className="w-7 h-7 text-indigo-600" /> 管理员部署全新节点</h2>
+                  <div className="space-y-6">
+                    <div>
+                      <label className="block text-sm font-black text-slate-700 mb-2 ml-1">独立编制全称</label>
+                      <input type="text" placeholder="填写标准的评定班级名" className="w-full px-5 py-4 rounded-2xl bg-white border border-slate-300 outline-none font-bold focus:ring-4 focus:ring-indigo-100 focus:border-indigo-600 transition-all" value={newClassNameInput} onChange={e => setNewClassNameInput(e.target.value)} />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-black text-slate-700 mb-2 ml-1">超级审计秘钥</label>
+                      <input type="password" placeholder="设置防篡改校验口令" className="w-full px-5 py-4 rounded-2xl bg-white border border-slate-300 outline-none font-bold focus:ring-4 focus:ring-indigo-100 focus:border-indigo-600 transition-all" value={newClassAdminPwdInput} onChange={e => setNewClassAdminPwdInput(e.target.value)} />
+                    </div>
+                    <div className="pt-6 border-t border-indigo-200/50">
+                      <label className="block text-sm font-black text-slate-700 mb-3 ml-1">实体身份库基建 (此步骤阻断推进)</label>
+                      <label className={`cursor-pointer flex flex-col items-center justify-center w-full py-8 bg-white border-2 border-dashed border-indigo-200 rounded-[2rem] hover:bg-indigo-50 hover:border-indigo-500 transition-all text-indigo-700 font-black ${isAiParsingRoster ? 'opacity-50 pointer-events-none' : ''}`}>
+                        {isAiParsingRoster ? <Loader2 className="w-8 h-8 animate-spin" /> : <UploadCloud className="w-8 h-8 mb-2" />} 
+                        {isAiParsingRoster ? '底层多模态架构正在读取表单...' : '装载人员花名册 (图文均可)'}
+                        <span className="text-xs text-slate-400 font-medium mt-1">系统已具备免疫表头与无效段落的清洗能力</span>
+                        <input type="file" accept=".csv, .txt, .xlsx, .xls, image/*" className="hidden" onChange={handleRosterUpload} disabled={isAiParsingRoster} />
+                      </label>
+                      {newClassRoster.length > 0 && !isAiParsingRoster && (
+                         <div className="mt-4 text-sm font-black text-green-700 bg-green-50 px-5 py-3 rounded-2xl border border-green-200 flex items-center gap-3"><CheckCircle className="w-5 h-5"/> 安全隔离库已锁定 {newClassRoster.length} 人的校验基准</div>
+                      )}
+                    </div>
+                    <button onClick={handleCreateClass} disabled={isAiParsingRoster} className={`w-full bg-slate-800 hover:bg-indigo-600 text-white font-black text-xl py-4 rounded-2xl shadow-xl shadow-slate-200 transition-all active:scale-95 ${isAiParsingRoster ? 'opacity-50 cursor-not-allowed' : ''}`}>强行推进生成序列</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      }
+
+      if (viewState === 'login') {
+        return (
+          <div className="min-h-screen bg-slate-100 flex items-center justify-center p-4">
+            <GlobalModals />
+            <div className="bg-white rounded-[3rem] shadow-2xl p-10 sm:p-14 w-full max-w-md border border-slate-100 relative overflow-hidden">
+              <div className="absolute top-0 right-0 w-32 h-32 bg-indigo-600/5 rounded-full -mr-16 -mt-16 pointer-events-none"></div>
+              <button onClick={() => setViewState('lobby')} className="text-sm font-black text-slate-400 hover:text-indigo-600 mb-10 flex items-center gap-2 group">
+                <div className="w-8 h-8 flex items-center justify-center rounded-full bg-slate-100 group-hover:bg-indigo-50 transition-colors">&larr;</div> 回归大区
+              </button>
+              <h2 className="text-4xl font-black text-slate-800 mb-10 tracking-tighter">探针接入<br/>{selectedClassToJoin}</h2>
+              <div className="flex space-x-2 bg-slate-100 p-1.5 rounded-2xl mb-10">
+                <button onClick={() => setLoginRoleTab('student')} className={`flex-1 py-3 text-sm font-black rounded-xl transition-all ${loginRoleTab === 'student' ? 'bg-white text-indigo-700 shadow-md' : 'text-slate-500 hover:text-slate-800'}`}>受评人节点</button>
+                <button onClick={() => setLoginRoleTab('admin')} className={`flex-1 py-3 text-sm font-black rounded-xl transition-all ${loginRoleTab === 'admin' ? 'bg-white text-indigo-700 shadow-md' : 'text-slate-500 hover:text-slate-800'}`}>总控调度口</button>
+              </div>
+              <div className="space-y-6">
+                {loginRoleTab === 'student' ? (
+                  <React.Fragment>
+                    <div><label className="block text-sm font-black text-slate-700 mb-2 ml-1">名目信息</label><input type="text" placeholder="严查身份指纹比对" className="w-full px-5 py-4 rounded-2xl bg-slate-50 border border-slate-200 outline-none font-bold focus:bg-white focus:border-indigo-600 transition-all" value={userNameInput} onChange={e => setUserNameInput(e.target.value)} /></div>
+                    <div><label className="block text-sm font-black text-slate-700 mb-2 ml-1">档案流水码 (学号)</label><input type="text" placeholder="字符级精准解析比对" className="w-full px-5 py-4 rounded-2xl bg-slate-50 border border-slate-200 outline-none font-bold focus:bg-white focus:border-indigo-600 transition-all" value={studentIdInput} onChange={e => setStudentIdInput(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleLogin()} /></div>
+                  </React.Fragment>
+                ) : (
+                  <div className="animate-in fade-in slide-in-from-right-2">
+                    <label className="block text-sm font-black text-slate-700 mb-2 ml-1">架构防线通行证</label><input type="password" placeholder="最高审计权限暗码" className="w-full px-5 py-4 rounded-2xl bg-slate-50 border border-slate-200 outline-none font-bold focus:bg-white focus:border-indigo-600 transition-all" value={adminPwdInput} onChange={e => setAdminPwdInput(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleLogin()} />
+                  </div>
+                )}
+                <button onClick={handleLogin} className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-black text-xl py-4.5 rounded-2xl shadow-xl shadow-indigo-100 mt-6 transition-all active:scale-95">授予核签并通行</button>
+              </div>
+            </div>
+          </div>
+        );
+      }
+
+      return (
+        <div className="min-h-screen flex flex-col bg-slate-50">
+          <GlobalModals />
+          <header className="bg-white border-b border-slate-200 sticky top-0 z-40 h-20 flex items-center shadow-sm">
+            <div className="max-w-7xl mx-auto px-6 w-full flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 bg-indigo-600 rounded-xl flex items-center justify-center text-white shadow-lg"><Trophy className="w-6 h-6" /></div>
+                <h1 className="text-2xl font-black text-slate-800 tracking-tighter uppercase">{currentClass}</h1>
+              </div>
+              <div className="flex items-center gap-4 sm:gap-8">
+                <div className="hidden sm:flex flex-col items-end">
+                  <span className="text-sm font-black text-slate-800 uppercase tracking-tighter">{currentUser}</span>
+                  <span className="text-[10px] font-bold text-slate-400 tracking-widest uppercase">{currentUserRole} Vector</span>
+                </div>
+                <button onClick={handleLeaveClass} className="text-sm font-black text-rose-500 hover:bg-rose-50 px-4 py-2 rounded-xl transition-all border border-rose-100 uppercase">Terminate</button>
+              </div>
+            </div>
+          </header>
+
+          <div className="max-w-7xl mx-auto px-6 w-full mt-8 flex space-x-3 p-2 bg-white shadow-xl shadow-slate-100 border border-slate-200 rounded-[2rem]">
+            <button onClick={() => setActiveTab('ranking')} className={`flex-1 py-4 text-sm font-black rounded-2xl transition-all flex items-center justify-center gap-2 uppercase tracking-tighter ${activeTab === 'ranking' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-200' : 'text-slate-500 hover:bg-slate-50'}`}><Trophy className="w-4 h-4" /> 统筹矩阵榜</button>
+            {currentUserRole === 'student' && <button onClick={initMyApplication} className={`flex-1 py-4 text-sm font-black rounded-2xl transition-all flex items-center justify-center gap-2 uppercase tracking-tighter ${activeTab === 'application' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-200' : 'text-slate-500 hover:bg-slate-50'}`}><Edit3 className="w-4 h-4" /> 个人卷宗库</button>}
+            {currentUserRole === 'admin' && isReadOnly && <button className="flex-1 py-4 text-sm font-black rounded-2xl bg-amber-50 text-amber-700 flex items-center justify-center gap-2 uppercase tracking-tighter"><Eye className="w-4 h-4" /> 观测态: {formName}</button>}
+            <button onClick={() => setActiveTab('ai-rules')} className={`flex-1 py-4 text-sm font-black rounded-2xl transition-all flex items-center justify-center gap-2 uppercase tracking-tighter ${activeTab === 'ai-rules' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-200' : 'text-slate-500 hover:bg-slate-50'}`}><Sparkles className="w-4 h-4" /> 裁决模型规范</button>
+          </div>
+
+          <main className="max-w-7xl mx-auto px-6 w-full flex-1 py-10">
+            {activeTab === 'ranking' && (
+              <div className="bg-white rounded-[2.5rem] shadow-2xl border border-slate-200 overflow-hidden animate-in fade-in zoom-in-95 duration-300">
+                {currentUserRole === 'admin' && (
+                  <div className="bg-indigo-600 p-6 flex flex-col sm:flex-row items-center justify-between gap-6 shadow-inner">
+                    <div className="text-white text-center sm:text-left">
+                      <h3 className="text-lg font-black tracking-tight">机器视觉全盘分析队列</h3>
+                      <p className="text-xs text-indigo-100 font-bold mt-1 tracking-widest uppercase">Unresolved Stack: {currentStudents.filter(s=>s.bonusItems?.some(i=>i.aiStatus==='Pending'||!i.aiStatus)).length} candidates</p>
+                    </div>
+                    <button onClick={handleBatchAudit} className="bg-white text-indigo-600 hover:bg-indigo-50 px-8 py-3.5 rounded-2xl text-sm font-black shadow-xl transition-all active:scale-95 flex items-center gap-2 uppercase"><PlayCircle className="w-5 h-5" /> 注入批处理推演算力</button>
+                  </div>
+                )}
+                <div className="p-8 flex flex-col xl:flex-row justify-between items-center gap-6 border-b border-slate-100">
+                  <div>
+                    <h2 className="text-2xl font-black text-slate-800 tracking-tight">高度智能排位矩阵</h2>
+                    <p className="text-sm text-slate-400 mt-2 font-bold tracking-widest uppercase">Global Score Synchronization Link</p>
+                  </div>
+                  <div className="flex gap-4">
+                    <button onClick={exportTable} className="flex items-center gap-2 px-6 py-3 bg-emerald-600 text-white rounded-2xl text-sm font-black shadow-lg shadow-emerald-100 transition-all hover:bg-emerald-700 active:scale-95"><ListOrdered className="w-4 h-4" /> 生成报告体系(.xlsx)</button>
+                    {currentUserRole === 'admin' && <button onClick={()=>{setConfirmDialog({show:true, message:"该执行指令属于最高权限范畴，将永久粉碎所有相关节点及子申报记录，不可逆回。确定要净化整个班级的网体架构吗？", onConfirm:handleDeleteClassByAdmin})}} className="p-3 bg-rose-50 text-rose-500 rounded-2xl hover:bg-rose-100 transition-colors"><Trash2 className="w-5 h-5"/></button>}
+                  </div>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left border-collapse">
+                    <thead className="bg-slate-50/80 text-slate-500 text-xs font-black uppercase tracking-[0.2em] border-b border-slate-200">
+                      <tr><th className="px-8 py-6 text-center">Rank</th><th className="px-8 py-6">Identity Vector</th><th className="px-8 py-6">Origin</th><th className="px-8 py-6">Acc Bonus</th><th className="px-8 py-6 text-indigo-600">Scaled Offset</th><th className="px-8 py-6 text-slate-800">Final Mark</th><th className="px-8 py-6">AI Terminal</th><th className="px-8 py-6 text-center">Protocol</th></tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {rankedStudents.length === 0 ? (
+                        <tr><td colSpan="8" className="px-8 py-20 text-center text-slate-300 font-bold italic text-lg tracking-widest uppercase">Null Sequence Detected.</td></tr>
+                      ) : (
+                        rankedStudents.map((s, idx) => (
+                          <tr key={s.id} className={`${s.studentId === currentStudentId ? 'bg-indigo-50/50' : 'hover:bg-slate-50'} transition-all group`}>
+                            <td className="px-8 py-6 text-center font-black text-slate-300 italic text-2xl group-hover:text-indigo-400">{idx+1}</td>
+                            <td className="px-8 py-6"><div className="font-black text-slate-800 text-lg tracking-tight">{s.name}</div><div className="text-xs text-slate-400 font-bold tracking-widest mt-1">{s.studentId}</div></td>
+                            <td className="px-8 py-6 font-bold text-slate-600">{s.originalGrade}</td>
+                            <td className="px-8 py-6 font-bold text-slate-400">{s.rawBonus}</td>
+                            <td className="px-8 py-6 font-black text-indigo-600 text-lg">+{s.scaledBonus}</td>
+                            <td className="px-8 py-6 font-black text-2xl text-slate-800 tracking-tighter">{s.totalScore}</td>
+                            <td className="px-8 py-6">{s.hasAiWarning ? <div className="text-rose-600 text-[10px] font-black border border-rose-200 bg-rose-50 px-3 py-1.5 rounded-full flex items-center gap-1.5 w-max uppercase tracking-tighter">Issue Detected</div> : <div className="text-emerald-600 text-[10px] font-black border border-emerald-200 bg-emerald-50 px-3 py-1.5 rounded-full flex items-center gap-1.5 w-max uppercase tracking-tighter">Verified Integrity</div>}</td>
+                            <td className="px-8 py-6 text-center"><button onClick={()=>loadStudentFormReadOnly(s)} className="text-indigo-600 bg-white border-2 border-indigo-100 hover:border-indigo-600 font-black px-6 py-2.5 rounded-2xl transition-all shadow-sm uppercase text-xs tracking-tighter">Drill Down</button></td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {activeTab === 'application' && (
+              <div className="bg-white rounded-[2.5rem] shadow-2xl border border-slate-200 p-10 relative overflow-hidden animate-in fade-in slide-in-from-bottom-8 duration-300">
+                {isReadOnly && <div className="absolute top-0 left-0 w-full bg-amber-50 text-amber-800 text-[10px] py-3 px-10 font-black tracking-[0.2em] flex items-center gap-2 border-b border-amber-200 uppercase"><Eye className="w-4 h-4" /> Blocked Terminal: Archive Reading Only</div>}
+                <div className={`mb-12 ${isReadOnly ? 'mt-10' : ''}`}><h2 className="text-3xl font-black text-slate-800 tracking-tighter uppercase">{isReadOnly ? `锁定卷宗: ${formName}` : '编译我的申报图谱'}</h2></div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-8 mb-12 bg-slate-50 p-8 rounded-[2rem] border border-slate-100 shadow-inner">
+                  <div><label className="block text-xs font-black text-slate-400 mb-3 ml-1 uppercase tracking-widest">Locked Identity</label><input type="text" value={formName} disabled className="w-full px-6 py-4 rounded-2xl border border-transparent bg-slate-200 text-slate-600 font-black cursor-not-allowed" /></div>
+                  <div><label className="block text-xs font-black text-slate-700 mb-3 ml-1 uppercase tracking-widest">Base Ground Truth Score (Mandatory)</label><input type="number" value={formOriginalGrade} onChange={e=>setFormOriginalGrade(e.target.value)} disabled={isReadOnly} className={`w-full px-6 py-4 rounded-2xl border font-black text-xl outline-none transition-all ${isReadOnly ? 'bg-slate-200 cursor-not-allowed' : 'bg-white border-slate-300 focus:border-indigo-600 focus:ring-4 focus:ring-indigo-50 shadow-md'}`} /></div>
+                </div>
+                <div className="mb-8 flex items-center justify-between"><h3 className="text-xl font-black text-slate-800 flex items-center gap-3 uppercase tracking-tighter"><BookOpen className="w-6 h-6 text-indigo-600" /> 加分插槽装载阵列</h3>{!isReadOnly && <button onClick={()=>{setFormBonusItems([...formBonusItems, {id: Date.now(), points:'', type:'', description:'', aiStatus: 'Pending'}])}} className="flex items-center gap-2 px-6 py-3 bg-indigo-600 text-white rounded-2xl font-black shadow-xl hover:bg-indigo-700 transition-all uppercase text-sm"><PlusCircle className="w-4 h-4" /> Mount Item Block</button>}</div>
+                <div className="space-y-6">
+                  {formBonusItems.length === 0 ? (
+                    <div className="text-center py-20 bg-slate-50 rounded-2xl border-2 border-dashed border-slate-200 text-slate-300 font-bold uppercase tracking-widest">Zero Bonus Entities Provisioned</div>
+                  ) : (
+                    formBonusItems.map(item => (
+                      <div key={item.id} className={`p-8 rounded-[2rem] border-2 transition-all group ${isReadOnly ? 'bg-slate-50/50 border-slate-100' : 'bg-white border-slate-200 hover:border-indigo-400 hover:shadow-xl'}`}>
+                        {!isReadOnly && <button onClick={()=>setFormBonusItems(formBonusItems.filter(i=>i.id!==item.id))} className="float-right text-slate-300 hover:text-rose-500 transition-colors p-2"><Trash2 className="w-6 h-6" /></button>}
+                        <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-6">
+                          <div><label className="block text-[10px] font-black text-slate-400 mb-2 uppercase tracking-[0.2em]">Numeric Float</label><input type="number" step="0.01" value={item.points} onChange={e=>setFormBonusItems(formBonusItems.map(i=>i.id===item.id?{...i, points: e.target.value}:i))} disabled={isReadOnly} className="w-full px-4 py-3 rounded-xl border text-lg font-black bg-slate-50 border-slate-100 outline-none focus:bg-white focus:border-indigo-600 transition-all" /></div>
+                          <div><label className="block text-[10px] font-black text-slate-400 mb-2 uppercase tracking-[0.2em]">Typology String</label><input type="text" value={item.type} onChange={e=>setFormBonusItems(formBonusItems.map(i=>i.id===item.id?{...i, type: e.target.value}:i))} disabled={isReadOnly} className="w-full px-4 py-3 rounded-xl border font-bold bg-slate-50 border-slate-100 outline-none focus:bg-white focus:border-indigo-600 transition-all" /></div>
+                          <div className="md:col-span-2"><label className="block text-[10px] font-black text-slate-400 mb-2 uppercase tracking-[0.2em]">Logic Proof Outline</label><input type="text" value={item.description} onChange={e=>setFormBonusItems(formBonusItems.map(i=>i.id===item.id?{...i, description: e.target.value}:i))} disabled={isReadOnly} className="w-full px-4 py-3 rounded-xl border font-bold bg-slate-50 border-slate-100 outline-none focus:bg-white focus:border-indigo-600 transition-all" /></div>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-4 pt-6 border-t border-slate-100">
+                          {!isReadOnly && <label className="cursor-pointer px-5 py-2.5 bg-indigo-50 text-indigo-700 rounded-xl text-xs font-black border border-indigo-200 hover:bg-indigo-100 transition-all flex items-center gap-2 uppercase tracking-tighter"><UploadCloud className="w-4 h-4" />Inject Binary Buffer<input type="file" accept="image/*" className="hidden" onChange={e=>{const f=e.target.files[0];if(f){compressImage(f, b64=>{setFormBonusItems(formBonusItems.map(i=>i.id===item.id?{...i, materialName: f.name, materialBase64: b64, aiStatus: 'Pending'}:i));});}}} /></label>}
+                          {item.materialName ? <button onClick={()=>item.materialBase64 && setPreviewImage(item.materialBase64)} className="text-xs font-black text-slate-500 bg-slate-100 px-5 py-2.5 rounded-xl border border-slate-200 hover:text-indigo-600 transition-all flex items-center gap-2 truncate max-w-[250px] uppercase tracking-tighter"><FileText className="w-4 h-4 flex-shrink-0"/>{item.materialName}</button> : <span className="text-xs font-bold text-slate-300 italic tracking-widest">Null Base64 Payload</span>}
+                          {item.aiStatus && item.aiStatus !== 'Pending' && <div className={`ml-auto text-[10px] font-black px-4 py-2 rounded-xl border-2 flex items-center gap-2 shadow-sm uppercase ${item.aiStatus==='Approve'?'bg-emerald-50 text-emerald-700 border-emerald-200':'bg-amber-50 text-amber-700 border-amber-200'}`}>{item.aiStatus==='Approve'?'AI SECURE FLAG':'HUMAN BYPASS REQUIRED'}<span className="opacity-40 font-bold ml-1">| {item.aiReason}</span></div>}
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+                {!isReadOnly && <div className="mt-12 flex justify-end"><button onClick={handleSaveStudent} className="flex items-center gap-3 bg-slate-900 hover:bg-indigo-600 text-white px-12 py-5 rounded-[1.5rem] font-black text-lg transition-all shadow-2xl active:scale-95 uppercase tracking-tighter"><Save className="w-6 h-6" /> Flash Sync to Cloud Space</button></div>}
+              </div>
+            )}
+
+            {activeTab === 'ai-rules' && (
+              <div className="bg-white rounded-[2.5rem] shadow-2xl border border-slate-200 p-10 max-w-5xl mx-auto overflow-hidden relative animate-in fade-in duration-500">
+                <div className="absolute top-0 right-0 p-10 opacity-5 pointer-events-none"><Sparkles className="w-32 h-32" /></div>
+                <div className="flex items-center gap-6 mb-12 border-b border-slate-100 pb-10"><div className="p-4 bg-purple-600 text-white rounded-3xl shadow-xl shadow-purple-200"><Sparkles className="w-10 h-10" /></div><div><h2 className="text-3xl font-black text-slate-800 tracking-tighter uppercase">Algorithm Bias Override</h2><p className="text-slate-400 font-bold mt-2 text-lg italic tracking-tighter uppercase">协作干预机制：由本班全体成员协同完善的评判网络图谱。</p></div></div>
+                
+                <div className="bg-slate-50 p-6 rounded-2xl border border-slate-200 mb-8">
+                  <label className="block text-sm font-black text-slate-700 mb-3 flex items-center gap-2"><BookOpen className="w-4 h-4 text-slate-400"/>视觉参照坐标底图 (仅 PDF/OCR图传)</label>
+                  <div className="flex flex-col sm:flex-row sm:items-center gap-4">
+                    {currentUserRole === 'admin' && (
+                      <button onClick={() => fileInputRef.current?.click()} className="flex items-center justify-center gap-2 px-5 py-3 bg-white border border-slate-300 rounded-xl text-sm font-bold text-slate-700 hover:bg-slate-100 transition-colors shadow-sm w-full sm:w-auto">
+                        <UploadCloud className="w-4 h-4 text-indigo-600" /> 载入盖章规范流文件
+                      </button>
+                    )}
+                    <input type="file" accept="application/pdf, image/*" ref={fileInputRef} onChange={handleRuleFileUpload} className="hidden" />
+                    {pdfFile.name ? (
+                      <div className="flex items-center gap-2 px-4 py-3 bg-emerald-50 text-emerald-800 border border-emerald-200 rounded-xl text-sm w-full sm:w-auto">
+                        <FileText className="w-5 h-5 flex-shrink-0 text-emerald-500" /> 
+                        <span className="font-bold truncate max-w-[200px]">{pdfFile.name}</span>
+                        <span className="text-[10px] bg-emerald-200/50 text-emerald-700 px-2 py-1 rounded-md font-bold ml-auto uppercase tracking-widest">Anchored Matrix</span>
+                      </div>
+                    ) : (<span className="text-xs font-bold text-slate-400 uppercase tracking-widest italic">Matrix is Void.</span>)}
+                  </div>
+                </div>
+
+                <div className="mb-12"><label className="block text-lg font-black text-slate-800 mb-5 flex items-center gap-3"><Edit3 className="w-6 h-6 text-purple-600"/> 异常逻辑豁免分支域</label><textarea rows="15" value={aiRulesText} onChange={e=>setAiRulesText(e.target.value)} className="w-full px-8 py-8 rounded-[2rem] border-2 border-slate-200 focus:border-purple-600 bg-slate-50 font-medium leading-relaxed outline-none transition-all shadow-inner text-slate-700 placeholder:italic" placeholder="写下逻辑强制覆盖节点。例如：1.特定项目免除证据闭环。 2.特权人免疫清单。"></textarea></div>
+                <div className="flex justify-end pt-4"><button onClick={saveAiRules} className="flex items-center justify-center gap-3 bg-purple-600 hover:bg-purple-700 text-white px-12 py-5 rounded-[1.5rem] font-black text-xl transition-all shadow-2xl shadow-purple-100 active:scale-95 uppercase tracking-tighter"><Save className="w-6 h-6" /> Deploy Tensor Adjustments</button></div>
+              </div>
+            )}
+          </main>
+          <footer className="py-10 text-center text-slate-300 font-black text-[10px] tracking-[0.5em] uppercase">Neural Network · Cloud Frame · Logic Bound</footer>
+        </div>
+      );
+    };
+
+    const root = createRoot(document.getElementById('root'));
+    if (!isConfigValid) {
+      root.render(<ConfigErrorUI />);
+    } else {
+      root.render(<App />);
+    }
+  </script>
+</body>
+</html>
