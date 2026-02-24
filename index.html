@@ -907,6 +907,7 @@
                 <div className="mb-8">
                   <label className="block text-sm font-medium text-slate-700 mb-2">官方评分文件 (支持 PDF/图片)</label>
                   <div className="flex flex-col sm:flex-row sm:items-center gap-4">
+                    {/* 移除 admin 限制，所有人皆可上传/替换文件 */}
                     <button onClick={() => fileInputRef.current?.click()} className="flex items-center justify-center gap-2 px-4 py-2 bg-white border border-slate-300 rounded-lg text-sm font-medium text-slate-700 hover:bg-slate-50 transition-colors shadow-sm w-full sm:w-auto">
                       <UploadCloud className="w-4 h-4 text-slate-500" /> 选择/替换规则文件
                     </button>
