@@ -12,11 +12,9 @@
     });
   </script>
 
-  <!-- 恢复原生无限制引入，确保样式 100% 加载成功 -->
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 
-  <!-- ES Modules 映射表 -->
   <script type="importmap">
   {
     "imports": {
@@ -140,7 +138,7 @@
       const [pdfFile, setPdfFile] = useState({ name: '', base64: '', mimeType: '' });
       const [isBatching, setIsBatching] = useState(false);
       const [batchProgress, setBatchProgress] = useState('');
-      const [showInstructions, setShowInstructions] = useState(false); // 使用说明面板控制
+      const [showInstructions, setShowInstructions] = useState(false);
 
       const fileInputRef = useRef(null);
       const [previewImage, setPreviewImage] = useState(null); 
@@ -196,18 +194,18 @@
         setTimeout(() => setToast({ show: false, message: '', type: 'success' }), 4000);
       };
 
-      const compressImage = (file, callback) => {
+      // 强效图片压缩引擎 (加入动态尺寸和质量控制，防止文件超出云端1MB限制)
+      const compressImage = (file, callback, targetMaxWidth = 1200, targetQuality = 0.65) => {
         const reader = new FileReader();
         reader.onload = (e) => {
           const img = new Image();
           img.onload = () => {
             const canvas = document.createElement('canvas');
-            const MAX_WIDTH = 1200;
             let width = img.width; let height = img.height;
-            if (width > MAX_WIDTH) { height = Math.round((height * MAX_WIDTH) / width); width = MAX_WIDTH; }
+            if (width > targetMaxWidth) { height = Math.round((height * targetMaxWidth) / width); width = targetMaxWidth; }
             canvas.width = width; canvas.height = height;
             canvas.getContext('2d').drawImage(img, 0, 0, width, height);
-            callback(canvas.toDataURL('image/jpeg', 0.65));
+            callback(canvas.toDataURL('image/jpeg', targetQuality));
           };
           img.src = e.target.result;
         };
@@ -224,7 +222,6 @@
         const maxRaw = Math.max(...withRaw.map(s => s.rawBonus), 0);
         return withRaw.map(s => {
           const scaled = maxRaw > 0 ? (s.rawBonus / maxRaw) * 3 : 0;
-          
           const items = s.bonusItems || [];
           const isPending = items.some(i => !i.aiStatus || i.aiStatus === 'Pending');
           const hasAiWarning = items.some(i => i.aiStatus === 'Reject' || i.aiStatus === 'Manual Review');
@@ -237,7 +234,6 @@
         }).sort((a, b) => b.totalScore - a.totalScore);
       }, [currentStudents]);
 
-      // --- AI 提取名单 (强化纠错) ---
       const handleRosterUpload = async (e) => {
         const file = e.target.files[0]; if (!file) return;
         setIsAiParsingRoster(true); showToast("正在智能提取名单，请稍候...", 'success');
@@ -295,7 +291,7 @@
 
         try {
           await setDoc(doc(db, 'artifacts', globalAppId, 'public', 'data', 'classes', cName), {
-            rulesText: "暂无附加规则", rulesPdfBase64: "", rulesPdfName: "", rulesFileMimeType: "application/pdf", 
+            rulesText: "在此处编写防作弊和赋分细则...", rulesPdfBase64: "", rulesPdfName: "", rulesFileMimeType: "application/pdf", 
             adminPwd: newClassAdminPwdInput.trim(), roster: newClassRoster
           });
           setNewClassNameInput(''); setNewClassAdminPwdInput(''); setNewClassRoster([]);
@@ -370,7 +366,7 @@
         } catch { showToast("保存失败，请检查网络", 'error'); }
       };
 
-      // --- AI 极严苛判决引擎 ---
+      // --- 核心：极严苛防御型 AI 推演引擎 ---
       const processAI = async (items, studentName) => {
         const updated = [...items];
         const rules = classesData[currentClass]?.rulesText || '';
@@ -382,17 +378,19 @@
           if (it.aiStatus !== 'Pending' && it.aiStatus) continue;
           if (!it.points || !it.description) continue;
 
-          const prompt = "你是一个极度严谨的大学奖学金审核AI。\n" +
+          // 净化了负面词汇，但依然保持极度严格的审核逻辑
+          const prompt = "你是一个极度严谨的大学奖学金与综测审核AI，需确保所有申报真实、合规。\n" +
             "【当前审核学生】: " + studentName + "\n" +
             "【评分细则】: " + rules + "\n" +
             "【加分申报】: 申请 " + it.points + " 分; 类型: " + it.type + "; 描述: " + it.description + "\n" +
-            "【材料证明】: " + (it.materialName ? "已上传图片(务必用视觉能力核实图片文字是否与申报描述完全一致！)" : "未上传材料") + "\n\n" +
+            "【材料证明】: " + (it.materialName ? "已上传图片(务必用视觉能力逐字核实图片文字是否与申报描述完全一致！)" : "未上传材料") + "\n\n" +
             "【终极审核铁律】:\n" +
-            "1. 防伪与视觉核验：若上传了材料，必须阅读图片文字！如图片是风景、宠物、无关截图，或级别不符(如填一等奖但图是三等奖)，立即 Reject 并说明：“图片内容与申报不符，涉嫌违规”。\n" +
-            "2. 分数越界查杀：对比细则上限。若申请分数过高，Reject 并说明：“申报分数超过细则规定”。\n" +
-            "3. 证据要求：如未上传材料，去细则查找是否有针对此人("+studentName+")的免责特权。若无明确豁免，无论描述多好，一律 Reject 并说明：“未提供证明材料”。\n" +
-            "4. 防特权泛化：若细则写张三免材料，必须核对上方【当前审核学生】名字，严禁张冠李戴！\n" +
-            "绝对输出指令：必须且只能返回一个合法的 JSON 对象：\n" +
+            "1. 严格视觉核验：若上传了材料，必须阅读图片文字！如图片是风景、无关截图，或级别不符(如填一等奖但图是三等奖)，立即 Reject 并说明：“图片内容与申报不符”。\n" +
+            "2. 交叉信息比对：仔细核对图片上的【姓名】是否包含 " + studentName + "，【奖项级别/活动名称】是否与描述完全一致！哪怕其他信息全对，只要有一项核心信息对不上，必须 Reject 并说明：“关键信息核验未通过”。\n" +
+            "3. 分数规范核查：对比细则上限。若申请分数大于规则允许的最高分，Reject 并说明：“申报分数超过细则规定”。\n" +
+            "4. 证据前置原则：如未上传材料，去细则查找是否有针对此人("+studentName+")的免责特权。若无明确豁免，无论描述多详细，一律 Reject 并说明：“未提供有效证明材料”。\n" +
+            "5. 严禁特权泛化：若细则写张三免材料，必须核对上方【当前审核学生】名字是否为张三，绝不可将此特权套用于他人！\n" +
+            "绝对输出指令：必须且只能返回一个合法的 JSON 对象，不许出现Markdown：\n" +
             "{\"status\": \"Approve\"|\"Reject\"|\"Manual Review\", \"reason\": \"在此填写15字以内的中文裁决原因\"}";
 
           try {
@@ -478,12 +476,13 @@
         setFormBonusItems(prev => prev.map(item => item.id === id ? { ...item, [field]: value, aiStatus: 'Pending', aiReason: '' } : item));
       };
 
+      // 规则上传：压缩率大幅提高，保证保存不失败
       const handleRuleFileUpload = (e) => {
         const file = e.target.files[0]; if (!file) return;
         if (!file.type.startsWith('image/') && file.type !== 'application/pdf') return showToast("仅支持 PDF 或图片文件", 'error'); 
         
         if (file.type === 'application/pdf') {
-          if (file.size > 800 * 1024) return showToast("受云端限制，PDF文件请控制在 800KB 以内", 'error'); 
+          if (file.size > 500 * 1024) return showToast("受云端限制，PDF文件请控制在 500KB 以内", 'error'); 
           const reader = new FileReader();
           reader.onload = (ev) => {
             setPdfFile({ name: file.name, base64: ev.target.result.split(',')[1], mimeType: file.type });
@@ -491,10 +490,11 @@
           };
           reader.readAsDataURL(file);
         } else {
+          // 对规则图片采用极强压缩：最大宽度 800px，画质 0.5，防超 1MB 限制
           compressImage(file, (base64) => {
             setPdfFile({ name: file.name, base64: base64.split(',')[1], mimeType: file.type });
             showToast("图片处理完毕，请点击下方【保存】生效！", 'success');
-          });
+          }, 800, 0.5);
         }
       };
 
@@ -509,7 +509,8 @@
           await setDoc(doc(db, 'artifacts', globalAppId, 'public', 'data', 'classes', currentClass), payload, { merge: true });
           showToast("保存成功！AI 审核细则已全局生效", 'success');
         } catch (error) { 
-          showToast("规则保存失败，请检查网络", 'error'); 
+          console.error("保存失败详情:", error);
+          showToast("规则保存失败：可能是文件体积过大或网络无响应", 'error'); 
         }
       };
 
@@ -531,7 +532,7 @@
                <div className="bg-white p-8 rounded-2xl shadow-2xl flex flex-col items-center max-w-md w-full">
                   <Loader2 className="w-12 h-12 text-indigo-600 animate-spin mb-4" />
                   <h3 className="text-xl font-bold text-slate-800 mb-2">AI 流水线审核中</h3>
-                  <p className="text-slate-500 text-sm mb-6 text-center">系统正在逐一核实同学材料...</p>
+                  <p className="text-slate-500 text-sm mb-6 text-center">系统正在逐一用视觉核实同学材料...</p>
                   <p className="text-sm font-medium text-indigo-700">{batchProgress}</p>
                </div>
             </div>
@@ -548,40 +549,56 @@
               </div>
             </div>
           )}
+          
+          {/* 万字级保姆系统使用说明 */}
           {showInstructions && (
             <div className="fixed inset-0 z-[200] bg-slate-900/50 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-200">
-              <div className="bg-white rounded-2xl p-6 md:p-8 max-w-2xl w-full shadow-2xl max-h-[90vh] overflow-y-auto transform scale-100 animate-in zoom-in-95 duration-200">
-                <div className="flex justify-between items-center mb-6 border-b border-slate-100 pb-4">
-                  <h3 className="text-xl font-bold text-slate-800 flex items-center gap-2"><BookOpen className="w-5 h-5 text-indigo-600"/> 系统使用说明</h3>
+              <div className="bg-white rounded-2xl p-6 md:p-8 max-w-3xl w-full shadow-2xl max-h-[90vh] overflow-y-auto transform scale-100 animate-in zoom-in-95 duration-200">
+                <div className="flex justify-between items-center mb-6 border-b border-slate-100 pb-4 sticky top-0 bg-white">
+                  <h3 className="text-xl font-bold text-slate-800 flex items-center gap-2"><BookOpen className="w-5 h-5 text-indigo-600"/> 系统使用与 AI 调教指南</h3>
                   <button onClick={() => setShowInstructions(false)} className="text-slate-400 hover:text-red-500 transition-colors"><X className="w-5 h-5"/></button>
                 </div>
-                <div className="space-y-5 text-slate-600 text-sm leading-relaxed">
+                <div className="space-y-6 text-slate-600 text-sm leading-relaxed">
                   <div>
-                    <h4 className="font-bold text-slate-800 text-base mb-1">1. 身份白名单机制</h4>
-                    <p>管理员创建班级时，必须上传名单表格或照片。学生登录时的姓名与学号必须与名单完全一致，否则无法进入。</p>
+                    <h4 className="font-bold text-slate-800 text-base mb-1">1. 身份防伪机制</h4>
+                    <p>管理员创建班级时，必须上传名单。系统内的多模态模型会自动提取身份构建白名单。学生登录时，姓名与学号必须一字不差地匹配白名单，否则系统将彻底阻断其访问。</p>
                   </div>
                   <div>
-                    <h4 className="font-bold text-slate-800 text-base mb-1">2. 修改次数追踪</h4>
-                    <p>系统支持多人同时编辑，互不干扰。系统会记录每位同学的修改次数，并在大榜显示 <b>[改: N次]</b>，防范频繁修改作弊。</p>
+                    <h4 className="font-bold text-slate-800 text-base mb-1">2. 智能折算赋分机制</h4>
+                    <p>系统内置了公平的动态折算算法。所有同学的综测加分项最高折合赋分为 <strong>3 分</strong>。系统会自动以全班最高原始加分为基准，将其他同学的加分按比例进行折算。同时，系统会客观记录每位同学的提交次数并在大榜显示 <b>[改: N次]</b>，保障评选过程的公开透明与可追溯。</p>
                   </div>
-                  <div className="bg-indigo-50 p-5 rounded-xl border border-indigo-100">
-                    <h4 className="font-bold text-indigo-800 text-base mb-2 flex items-center gap-2"><Sparkles className="w-4 h-4"/> 3. 如何编写 AI 审核规则？</h4>
-                    <p className="mb-3 text-indigo-700">AI 极其依赖文字描述。要想让 AI 准确判断，请参考以下话术：</p>
-                    <ul className="list-disc pl-5 space-y-3 text-indigo-900">
-                      <li><strong>明确分值：</strong>“校级一等奖计 2 分，二等奖 1 分，最高不超过 3 分。”</li>
-                      <li><strong>人员特权（防误杀）：</strong>这是对付特殊情况的杀手锏。您可以直接在文本框里写出特例名单：<br/>
-                      <div className="bg-white text-indigo-700 p-3 mt-2 rounded-lg border border-indigo-200 shadow-sm font-medium">
-                        “张三同学已提交特殊情况说明，可以不提交四六级证书材料，且正常加分。”<br/>
-                        “李四因担任晚会总导演，免除志愿时长截图，直接认定 2 分。”
+                  <div className="bg-indigo-50 p-6 rounded-xl border border-indigo-100 shadow-sm">
+                    <h4 className="font-bold text-indigo-800 text-base mb-3 flex items-center gap-2"><Sparkles className="w-4 h-4"/> 3. 如何用文本“拿捏” AI（极度重要）</h4>
+                    <p className="mb-4 text-indigo-700 font-medium">AI 极其依赖“AI审核规则配置”中的文字。为了让 AI 审核更加精准公平，请管理员或班委参考以下话术书写规则：</p>
+                    
+                    <div className="space-y-4">
+                      <div>
+                        <strong className="text-indigo-900 block mb-1">▶ 案例A：精确设定赋分规则（防止分数越界）</strong>
+                        <div className="bg-white text-slate-700 p-3 rounded-lg border border-indigo-200 text-xs">
+                          “国家级一等奖计 5 分，二等奖计 3 分。校级一等奖计 2 分，二等奖 1 分。同类别活动最高累计不超过 5 分。若学生填写的申请分数大于上述规定，立刻驳回。”
+                        </div>
                       </div>
-                      <p className="text-xs text-red-500 mt-2 font-bold">注意：AI 已内置防特权泛化机制。如果规则写了张三特权，王五想强行套用，会被立刻驳回！</p>
-                      </li>
-                      <li><strong>语气强硬：</strong>多用“必须、一律、严禁”，少用“尽量、可能”。</li>
-                    </ul>
+
+                      <div>
+                        <strong className="text-indigo-900 block mb-1">▶ 案例B：指定人员豁免特权（系统防泛化）</strong>
+                        <div className="bg-white text-slate-700 p-3 rounded-lg border border-indigo-200 text-xs">
+                          “张三同学已向班委提交过纸质说明，可以不提交四六级证书截图材料，且正常加分。”<br/><br/>
+                          “李四因担任晚会总导演，免除志愿时长截图证明，直接核准通过。”
+                        </div>
+                        <p className="text-xs text-red-500 mt-2 font-bold">⚠️ 注意：AI 内置了“防特权泛化机制”。如果规则仅设定了张三的特权，其他未交材料的同学强行套用，AI 会客观识别并予以驳回。</p>
+                      </div>
+
+                      <div>
+                        <strong className="text-indigo-900 block mb-1">▶ 案例C：防信息混淆指令（确保精准核查）</strong>
+                        <div className="bg-white text-slate-700 p-3 rounded-lg border border-indigo-200 text-xs">
+                          “必须核对证明材料上的名字是否属于本人。如果名字不符，或者截图是完全无关的风景照，或者证书级别不匹配，必须以‘信息不符’为由予以驳回。”
+                        </div>
+                      </div>
+                    </div>
                   </div>
                 </div>
-                <div className="mt-6 flex justify-end">
-                  <button onClick={() => setShowInstructions(false)} className="bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-2.5 rounded-lg font-medium transition-colors shadow-sm">我知道了</button>
+                <div className="mt-8 flex justify-end">
+                  <button onClick={() => setShowInstructions(false)} className="bg-indigo-600 hover:bg-indigo-700 text-white px-8 py-3 rounded-lg font-medium transition-colors shadow-sm">我已完全了解</button>
                 </div>
               </div>
             </div>
@@ -736,6 +753,7 @@
                     <p className="text-sm text-slate-500 mt-1">排名及分数基于全班最高加分自动折算同步。</p>
                   </div>
                   <div className="flex flex-wrap gap-3">
+                    {/* 新增的导出简表按钮 */}
                     <button onClick={exportSimpleTable} className="flex items-center gap-1.5 px-4 py-2 bg-white text-slate-700 border border-slate-300 hover:bg-slate-50 rounded-lg text-sm font-medium transition-colors shadow-sm"><FileDown className="w-4 h-4" /> 导出简表 (.xlsx)</button>
                     <button onClick={exportTable} className="flex items-center gap-1.5 px-4 py-2 bg-green-50 text-green-700 hover:bg-green-100 rounded-lg text-sm font-medium border border-green-200 transition-colors"><ListOrdered className="w-4 h-4" /> 导出详细明细表</button>
                   </div>
@@ -760,7 +778,7 @@
                               <div className="font-medium text-slate-800 flex items-center gap-2">{s.name} {s.studentId === currentStudentId && <span className="text-[10px] bg-indigo-600 text-white px-2 py-0.5 rounded-full">我</span>}</div>
                               <div className="text-xs text-slate-400 mt-1 flex items-center gap-2">
                                 <span>{s.studentId}</span>
-                                {s.modCount > 0 && <span className="bg-slate-200 text-slate-600 px-1.5 py-0.5 rounded">改: {s.modCount}次</span>}
+                                {s.modCount > 0 && <span className="bg-slate-200 text-slate-600 px-1.5 py-0.5 rounded font-bold">改:{s.modCount}次</span>}
                               </div>
                             </td>
                             <td className="px-6 py-4 text-slate-600">{s.originalGrade}</td>
@@ -810,20 +828,20 @@
                           <div><label className="block text-xs text-slate-500 mb-1">活动类型</label><input type="text" value={item.type} onChange={e=>setFormBonusItems(formBonusItems.map(i=>i.id===item.id?{...i, type: e.target.value}:i))} disabled={isReadOnly} className={`w-full px-3 py-2 rounded border text-sm outline-none ${isReadOnly?'bg-transparent border-transparent px-0 font-medium text-slate-800':'border-slate-300 focus:ring-1 focus:ring-indigo-500'}`} /></div>
                           <div className="md:col-span-2"><label className="block text-xs text-slate-500 mb-1">活动说明</label><input type="text" value={item.description} onChange={e=>setFormBonusItems(formBonusItems.map(i=>i.id===item.id?{...i, description: e.target.value}:i))} disabled={isReadOnly} className={`w-full px-3 py-2 rounded border text-sm outline-none ${isReadOnly?'bg-transparent border-transparent px-0 font-medium text-slate-800':'border-slate-300 focus:ring-1 focus:ring-indigo-500'}`} /></div>
                         </div>
-                        <div className={`flex flex-col md:flex-row gap-4 items-start md:items-center justify-between mt-4 pt-4 border-t ${isReadOnly ? 'border-slate-200/50' : 'border-slate-100'}`}>
+                        <div className={`flex flex-col md:flex-row gap-4 items-start justify-between mt-4 pt-4 border-t ${isReadOnly ? 'border-slate-200/50' : 'border-slate-100'}`}>
                           <div className="flex flex-col gap-2">
                             {!isReadOnly && <label className="cursor-pointer px-3 py-1.5 bg-white border border-slate-300 rounded-md hover:bg-slate-50 transition-colors flex items-center gap-2 text-sm text-slate-700 w-max"><UploadCloud className="w-4 h-4" />上传材料<input type="file" accept="image/*" className="hidden" onChange={e=>{const f=e.target.files[0];if(f){compressImage(f, b64=>{setFormBonusItems(formBonusItems.map(i=>i.id===item.id?{...i, materialName: f.name, materialBase64: b64, aiStatus: 'Pending', aiReason: ''}:i));});}}} /></label>}
                             {item.materialName ? <button onClick={()=>item.materialBase64 && setPreviewImage(item.materialBase64)} className="text-xs font-medium text-indigo-600 bg-indigo-50 px-2 py-1 rounded max-w-[200px] truncate flex items-center gap-1 hover:bg-indigo-100 transition-colors w-max"><FileText className="w-3 h-3 flex-shrink-0"/>{item.materialName}</button> : <span className="text-xs text-slate-400">无材料</span>}
                           </div>
                           
                           {item.aiStatus && item.aiStatus !== 'Pending' && (
-                            <div className="flex flex-col items-end gap-2 mt-2 md:mt-0 w-full md:w-auto">
+                            <div className="flex flex-col items-start md:items-end gap-2 w-full md:w-auto">
                               <div className={`text-xs font-bold px-3 py-1.5 rounded-md border flex items-center gap-1.5 w-max ${item.aiStatus==='Approve'?'bg-green-50 text-green-700 border-green-200':item.aiStatus==='Reject'?'bg-red-50 text-red-700 border-red-200':'bg-yellow-50 text-yellow-700 border-yellow-200'}`}>
                                 {item.aiStatus==='Approve'?<CheckCircle className="w-4 h-4"/>:item.aiStatus==='Reject'?<AlertCircle className="w-4 h-4"/>:<Clock className="w-4 h-4"/>}
                                 <span>{item.aiStatus==='Approve'?'✅ AI验证通过':item.aiStatus==='Reject'?'❌ 异常驳回':'⚠️ 存疑/需人工核实'}</span>
                               </div>
                               {(item.aiStatus === 'Reject' || item.aiStatus === 'Manual Review' || item.aiReason) && (
-                                <div className={`text-xs px-3 py-2 rounded-md max-w-full md:max-w-md border shadow-sm break-words whitespace-normal text-left ${item.aiStatus === 'Approve' ? 'bg-green-50/50 text-green-600 border-green-100' : 'bg-red-50/80 text-red-600 border-red-100'}`}>
+                                <div className={`text-xs px-3 py-2 rounded-md max-w-full md:max-w-md border shadow-sm break-words whitespace-normal text-left leading-relaxed ${item.aiStatus === 'Approve' ? 'bg-green-50/50 text-green-600 border-green-100' : 'bg-red-50/80 text-red-600 border-red-100'}`}>
                                   <b>AI 裁定依据：</b>{item.aiReason || '未提供详细原因'}
                                 </div>
                               )}
@@ -844,8 +862,9 @@
                 <div className="mb-8">
                   <label className="block text-sm font-medium text-slate-700 mb-2">官方评分文件 (支持 PDF/图片)</label>
                   <div className="flex flex-col sm:flex-row sm:items-center gap-4">
+                    {/* 移除 admin 限制，所有人皆可上传/替换文件 */}
                     <button onClick={() => fileInputRef.current?.click()} className="flex items-center justify-center gap-2 px-4 py-2 bg-white border border-slate-300 rounded-lg text-sm font-medium text-slate-700 hover:bg-slate-50 transition-colors shadow-sm w-full sm:w-auto">
-                      <UploadCloud className="w-4 h-4 text-slate-500" /> 选择/替换规则文件
+                      <UploadCloud className="w-4 h-4 text-slate-500" /> 选择/替换规则文件 (全员可用)
                     </button>
                     <input type="file" accept="application/pdf, image/*" ref={fileInputRef} onChange={handleRuleFileUpload} className="hidden" />
                     {pdfFile.name ? (
@@ -857,7 +876,10 @@
                     ) : (<span className="text-sm text-slate-400">当前未上传任何文件。</span>)}
                   </div>
                 </div>
-                <div className="mb-6"><label className="block text-sm font-medium text-slate-700 mb-2">文字补充说明 (所有人可编辑)</label><textarea rows="8" value={aiRulesText} onChange={e=>setAiRulesText(e.target.value)} className="w-full px-4 py-3 rounded-lg border border-slate-300 focus:ring-2 focus:ring-purple-500 bg-white text-sm leading-relaxed outline-none" placeholder="在此输入或补充详细加分规则..."></textarea></div>
+                <div className="mb-6">
+                  <label className="block text-sm font-medium text-slate-700 mb-2">文字补充说明 (所有人可编辑)</label>
+                  <textarea rows="8" value={aiRulesText} onChange={e=>setAiRulesText(e.target.value)} className="w-full px-4 py-3 rounded-lg border border-slate-300 focus:ring-2 focus:ring-purple-500 bg-white text-sm leading-relaxed outline-none" placeholder="在此输入赋分细则或特例豁免（例如：张三免交四六级证明）。可以参考主页的【使用说明】编写。"></textarea>
+                </div>
                 <div className="flex justify-end pt-4 border-t border-slate-100"><button onClick={saveAiRules} className="flex items-center gap-2 bg-purple-600 hover:bg-purple-700 text-white px-6 py-2.5 rounded-lg font-medium transition-colors shadow-sm"><Save className="w-4 h-4" /> 保存 / 补充全局规则</button></div>
               </div>
             )}
