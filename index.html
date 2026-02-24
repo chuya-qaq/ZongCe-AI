@@ -42,19 +42,19 @@
     } from 'lucide-react';
     import { initializeApp } from 'firebase/app';
     import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
-    import { getFirestore, doc, setDoc, collection, onSnapshot, deleteDoc } from 'firebase/firestore';
+    import { getFirestore, doc, setDoc, getDoc, collection, onSnapshot, deleteDoc } from 'firebase/firestore';
     import * as XLSX from 'xlsx';
 
     // ==========================================
     // 🚀 数据库配置区
     // ==========================================
     const localFirebaseConfig = {
-      apiKey: "AIzaSyBL8ACBb8qTeg_AwUCPGNV4XZPtPErVZZg",
-      authDomain: "zongce-ai.firebaseapp.com",
-      projectId: "zongce-ai",
-      storageBucket: "zongce-ai.firebasestorage.app",
-      messagingSenderId: "526161486669",
-      appId: "1:526161486669:web:6e211a793d85934de34d04"
+      apiKey: "在此填入你的 apiKey",
+      authDomain: "在此填入你的 authDomain",
+      projectId: "在此填入你的 projectId",
+      storageBucket: "在此填入你的 storageBucket",
+      messagingSenderId: "在此填入你的 messagingSenderId",
+      appId: "在此填入你的 appId"
     };
 
     let envConfig = null;
@@ -194,8 +194,8 @@
         setTimeout(() => setToast({ show: false, message: '', type: 'success' }), 4000);
       };
 
-      // 强效图片压缩引擎 (加入动态尺寸和质量控制，防止文件超出云端1MB限制)
-      const compressImage = (file, callback, targetMaxWidth = 1200, targetQuality = 0.65) => {
+      // 极限压制：将画质调为0.35，最大宽度降至800，防 Firestore 超限
+      const compressImage = (file, callback, targetMaxWidth = 800, targetQuality = 0.35) => {
         const reader = new FileReader();
         reader.onload = (e) => {
           const img = new Image();
@@ -214,6 +214,11 @@
 
       const currentStudents = useMemo(() => studentsData.filter(s => s.className === currentClass), [currentClass, studentsData]);
       
+      // 提取自己当前的数据状态（用于判断前端锁定互斥）
+      const meData = useMemo(() => currentStudents.find(s => s.studentId === currentStudentId), [currentStudents, currentStudentId]);
+      const isAppLocked = !isReadOnly && meData?.isAiProcessing === true;
+      const isFormDisabled = isReadOnly || isAppLocked;
+
       const rankedStudents = useMemo(() => {
         if (currentStudents.length === 0) return [];
         const withRaw = currentStudents.map(s => ({
@@ -291,7 +296,7 @@
 
         try {
           await setDoc(doc(db, 'artifacts', globalAppId, 'public', 'data', 'classes', cName), {
-            rulesText: "在此处编写防作弊和赋分细则...", rulesPdfBase64: "", rulesPdfName: "", rulesFileMimeType: "application/pdf", 
+            rulesText: "在此处编写细则即可", rulesPdfBase64: "", rulesPdfName: "", rulesFileMimeType: "application/pdf", 
             adminPwd: newClassAdminPwdInput.trim(), roster: newClassRoster
           });
           setNewClassNameInput(''); setNewClassAdminPwdInput(''); setNewClassRoster([]);
@@ -324,6 +329,9 @@
           if (adminPwdInput.trim() !== classData.adminPwd) return showToast("管理员密码错误", 'error');
           setCurrentUser('管理员'); setCurrentStudentId('ADMIN'); setCurrentUserRole('admin');
         }
+        
+        setCurrentClass(selectedClassToJoin);
+
         setAiRulesText(classData.rulesText || ''); 
         setPdfFile({ name: classData.rulesPdfName || '', base64: classData.rulesPdfBase64 || '', mimeType: classData.rulesFileMimeType || 'application/pdf' });
         setViewState('dashboard');
@@ -355,12 +363,22 @@
           const existingStudent = currentStudents.find(s => s.studentId === currentStudentId);
           const nextModCount = (existingStudent?.modCount || 0) + 1;
 
-          await setDoc(doc(db, 'artifacts', globalAppId, 'public', 'data', 'students', `${currentClass}_${currentStudentId}`), {
+          const payload = {
             className: currentClass, name: currentUser, studentId: currentStudentId,
             originalGrade: formOriginalGrade, bonusItems: formBonusItems, 
             lastModified: new Date().toLocaleString(),
+            lastUpdateTime: Date.now(), // 写入乐观锁时间戳
+            isAiProcessing: false, // 提交时默认重置AI处理状态
             modCount: nextModCount
-          });
+          };
+
+          // 核心拦截：计算单次数据 Payload 大小，防穿透 1MB 限制
+          const payloadSize = new Blob([JSON.stringify(payload)]).size;
+          if (payloadSize > 900 * 1024) {
+             return showToast("⚠️ 数据总大小超出 900KB 限制！请删减部分图片或重新上传更小的截图。", 'error');
+          }
+
+          await setDoc(doc(db, 'artifacts', globalAppId, 'public', 'data', 'students', `${currentClass}_${currentStudentId}`), payload);
           showToast(`数据保存成功 (第 ${nextModCount} 次提交)！AI审核将由管理员统一进行`, 'success'); 
           setActiveTab('ranking');
         } catch { showToast("保存失败，请检查网络", 'error'); }
@@ -423,8 +441,36 @@
         for (let i = 0; i < targets.length; i++) {
           const s = targets[i]; 
           setBatchProgress(`正在审核: ${s.name} (${i+1}/${targets.length})`);
+          
+          const studentDocRef = doc(db, 'artifacts', globalAppId, 'public', 'data', 'students', `${currentClass}_${s.studentId}`);
+
+          // 1. 设置 Processing 状态锁定前端
+          await setDoc(studentDocRef, { isAiProcessing: true }, { merge: true });
+
+          // 2. 跑 AI 审核逻辑
           const items = await processAI(s.bonusItems, s.name);
-          await setDoc(doc(db, 'artifacts', globalAppId, 'public', 'data', 'students', `${currentClass}_${s.studentId}`), { ...s, bonusItems: items });
+
+          // 3. 防篡改版本校验锁：拉取最新数据校验
+          try {
+            const freshSnap = await getDoc(studentDocRef);
+            if (freshSnap.exists()) {
+              const freshData = freshSnap.data();
+              if (freshData.lastUpdateTime && freshData.lastUpdateTime !== s.lastUpdateTime) {
+                // 如果发现锁时间戳不匹配，说明学生在这几秒利用强制刷新或其他端改了数据，立即抛弃 AI 结果
+                const resetItems = freshData.bonusItems.map(item => ({
+                  ...item, aiStatus: 'Pending', aiReason: '数据在审核期间被修改，AI审核结果已废弃，需重新排队审核'
+                }));
+                await setDoc(studentDocRef, { ...freshData, bonusItems: resetItems, isAiProcessing: false });
+                showToast(`检测到 ${s.name} 数据在审核中发生变动，已废弃本次结果。`, 'error');
+              } else {
+                // 安全回写
+                await setDoc(studentDocRef, { ...freshData, bonusItems: items, isAiProcessing: false });
+              }
+            }
+          } catch (err) {
+            console.error("写回数据失败:", err);
+          }
+          
           if (i < targets.length - 1) await new Promise(r => setTimeout(r, 2500));
         }
         setIsBatching(false); showToast("批量流水线审核完成！", 'success');
@@ -476,7 +522,6 @@
         setFormBonusItems(prev => prev.map(item => item.id === id ? { ...item, [field]: value, aiStatus: 'Pending', aiReason: '' } : item));
       };
 
-      // 规则上传：压缩率大幅提高，保证保存不失败
       const handleRuleFileUpload = (e) => {
         const file = e.target.files[0]; if (!file) return;
         if (!file.type.startsWith('image/') && file.type !== 'application/pdf') return showToast("仅支持 PDF 或图片文件", 'error'); 
@@ -490,11 +535,11 @@
           };
           reader.readAsDataURL(file);
         } else {
-          // 对规则图片采用极强压缩：最大宽度 800px，画质 0.5，防超 1MB 限制
+          // 极致压缩：宽度降至 600，质量降至 0.3，彻底防止长图导致的超量报错
           compressImage(file, (base64) => {
             setPdfFile({ name: file.name, base64: base64.split(',')[1], mimeType: file.type });
             showToast("图片处理完毕，请点击下方【保存】生效！", 'success');
-          }, 800, 0.5);
+          }, 600, 0.3);
         }
       };
 
@@ -506,6 +551,13 @@
             payload.rulesPdfBase64 = pdfFile.base64;
             payload.rulesFileMimeType = pdfFile.mimeType || 'application/pdf';
           }
+          
+          // 全局规则文件拦截测算
+          const payloadSize = new Blob([JSON.stringify(payload)]).size;
+          if (payloadSize > 900 * 1024) {
+             return showToast("⚠️ 规则文件总大小超出 900KB 限制！请压缩或精简内容后重试。", 'error');
+          }
+
           await setDoc(doc(db, 'artifacts', globalAppId, 'public', 'data', 'classes', currentClass), payload, { merge: true });
           showToast("保存成功！AI 审核细则已全局生效", 'success');
         } catch (error) { 
@@ -550,7 +602,6 @@
             </div>
           )}
           
-          {/* 万字级保姆系统使用说明 */}
           {showInstructions && (
             <div className="fixed inset-0 z-[200] bg-slate-900/50 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-200">
               <div className="bg-white rounded-2xl p-6 md:p-8 max-w-3xl w-full shadow-2xl max-h-[90vh] overflow-y-auto transform scale-100 animate-in zoom-in-95 duration-200">
@@ -611,7 +662,6 @@
           <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4 relative">
             <GlobalModals />
             
-            {/* 右上角说明按钮 */}
             <div className="absolute top-4 right-4 z-20">
               <button onClick={() => setShowInstructions(true)} className="flex items-center gap-1.5 text-slate-600 hover:text-indigo-600 font-medium bg-white px-4 py-2 rounded-full shadow-sm border border-slate-200 transition-colors">
                 <HelpCircle className="w-4 h-4"/> 使用说明
@@ -753,7 +803,6 @@
                     <p className="text-sm text-slate-500 mt-1">排名及分数基于全班最高加分自动折算同步。</p>
                   </div>
                   <div className="flex flex-wrap gap-3">
-                    {/* 新增的导出简表按钮 */}
                     <button onClick={exportSimpleTable} className="flex items-center gap-1.5 px-4 py-2 bg-white text-slate-700 border border-slate-300 hover:bg-slate-50 rounded-lg text-sm font-medium transition-colors shadow-sm"><FileDown className="w-4 h-4" /> 导出简表 (.xlsx)</button>
                     <button onClick={exportTable} className="flex items-center gap-1.5 px-4 py-2 bg-green-50 text-green-700 hover:bg-green-100 rounded-lg text-sm font-medium border border-green-200 transition-colors"><ListOrdered className="w-4 h-4" /> 导出详细明细表</button>
                   </div>
@@ -806,31 +855,33 @@
 
             {activeTab === 'application' && (
               <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 md:p-8 relative">
-                {isReadOnly && <div className="absolute top-0 left-0 w-full bg-amber-50 text-amber-800 text-sm py-2 px-6 font-medium flex items-center gap-2 border-b border-amber-200 rounded-t-2xl"><Eye className="w-4 h-4" /> {currentUserRole === 'admin' ? `管理员审阅模式：正在查看 ${formName} 的申报明细。` : `您正在查看 ${formName} 的明细。因权限无法修改。`}</div>}
-                <div className={`mb-6 ${isReadOnly ? 'mt-8' : ''}`}>
+                {isReadOnly && !isAppLocked && <div className="absolute top-0 left-0 w-full bg-amber-50 text-amber-800 text-sm py-2 px-6 font-medium flex items-center gap-2 border-b border-amber-200 rounded-t-2xl"><Eye className="w-4 h-4" /> {currentUserRole === 'admin' ? `管理员审阅模式：正在查看 ${formName} 的申报明细。` : `您正在查看 ${formName} 的明细。因权限无法修改。`}</div>}
+                {isAppLocked && <div className="absolute top-0 left-0 w-full bg-blue-50 text-blue-800 text-sm py-2 px-6 font-medium flex items-center gap-2 border-b border-blue-200 rounded-t-2xl"><Loader2 className="w-4 h-4 animate-spin" /> 🔒 AI 正在审核您的材料，为保证数据一致性，当前已锁定修改。</div>}
+
+                <div className={`mb-6 ${isReadOnly || isAppLocked ? 'mt-8' : ''}`}>
                   <h2 className="text-lg font-bold text-slate-800">{isReadOnly ? `${formName} 的申报详情` : '我的成绩与加分录入'}</h2>
-                  {!isReadOnly && <p className="text-sm text-slate-500 mt-1">所有数据极速保存，AI 智能审核将由管理员统一执行。</p>}
+                  {!isReadOnly && !isAppLocked && <p className="text-sm text-slate-500 mt-1">所有数据极速保存，AI 智能审核将由管理员统一执行。</p>}
                 </div>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
                   <div><label className="block text-sm font-medium text-slate-700 mb-1">姓名 (自动锁定)</label><input type="text" value={formName} disabled className="w-full px-4 py-2.5 rounded-lg border border-slate-200 bg-slate-50 text-slate-500 outline-none" /></div>
-                  <div><label className="block text-sm font-medium text-slate-700 mb-1">原始成绩 {isReadOnly ? '' : '(必填)'}</label><input type="number" value={formOriginalGrade} onChange={e=>setFormOriginalGrade(e.target.value)} disabled={isReadOnly} placeholder="例如：90" className={`w-full px-4 py-2.5 rounded-lg border ${isReadOnly ? 'border-slate-200 bg-slate-50 text-slate-500' : 'border-slate-300 focus:ring-2 focus:ring-indigo-500 bg-white'} outline-none`} /></div>
+                  <div><label className="block text-sm font-medium text-slate-700 mb-1">原始成绩 {!isFormDisabled && '(必填)'}</label><input type="number" value={formOriginalGrade} onChange={e=>setFormOriginalGrade(e.target.value)} disabled={isFormDisabled} placeholder="例如：90" className={`w-full px-4 py-2.5 rounded-lg border ${isFormDisabled ? 'border-slate-200 bg-slate-50 text-slate-500' : 'border-slate-300 focus:ring-2 focus:ring-indigo-500 bg-white'} outline-none`} /></div>
                 </div>
-                <div className="mb-4 flex items-center justify-between border-b border-slate-100 pb-4"><h3 className="text-md font-semibold text-slate-800 flex items-center gap-2"><BookOpen className="w-5 h-5 text-indigo-500" /> 综测加分明细</h3>{!isReadOnly && <button onClick={()=>{setFormBonusItems([...formBonusItems, {id: Date.now(), points:'', type:'', description:'', aiStatus: 'Pending'}])}} className="flex items-center gap-2 px-4 py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded-lg text-sm font-medium transition-colors"><PlusCircle className="w-4 h-4" /> 添加加分项</button>}</div>
+                <div className="mb-4 flex items-center justify-between border-b border-slate-100 pb-4"><h3 className="text-md font-semibold text-slate-800 flex items-center gap-2"><BookOpen className="w-5 h-5 text-indigo-500" /> 综测加分明细</h3>{!isFormDisabled && <button onClick={()=>{setFormBonusItems([...formBonusItems, {id: Date.now(), points:'', type:'', description:'', aiStatus: 'Pending'}])}} className="flex items-center gap-2 px-4 py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded-lg text-sm font-medium transition-colors"><PlusCircle className="w-4 h-4" /> 添加加分项</button>}</div>
                 <div className="space-y-4">
                   {formBonusItems.length === 0 ? (
-                    <div className="text-center py-10 bg-slate-50 rounded-xl border border-dashed border-slate-300"><p className="text-slate-500">{isReadOnly ? '该同学暂未申报加分' : '暂无加分项目，点击右上角添加'}</p></div>
+                    <div className="text-center py-10 bg-slate-50 rounded-xl border border-dashed border-slate-300"><p className="text-slate-500">{isFormDisabled ? '该同学暂未申报加分' : '暂无加分项目，点击右上角添加'}</p></div>
                   ) : (
                     formBonusItems.map(item => (
-                      <div key={item.id} className={`p-5 rounded-xl border relative group ${isReadOnly ? 'bg-slate-50/50 border-slate-200' : 'bg-white border-slate-200 shadow-sm'}`}>
-                        {!isReadOnly && <button onClick={()=>setFormBonusItems(formBonusItems.filter(i=>i.id!==item.id))} className="absolute top-4 right-4 text-slate-400 hover:text-red-500 transition-colors"><Trash2 className="w-5 h-5" /></button>}
+                      <div key={item.id} className={`p-5 rounded-xl border relative group ${isFormDisabled ? 'bg-slate-50/50 border-slate-200' : 'bg-white border-slate-200 shadow-sm'}`}>
+                        {!isFormDisabled && <button onClick={()=>setFormBonusItems(formBonusItems.filter(i=>i.id!==item.id))} className="absolute top-4 right-4 text-slate-400 hover:text-red-500 transition-colors"><Trash2 className="w-5 h-5" /></button>}
                         <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-3 pr-8">
-                          <div><label className="block text-xs text-slate-500 mb-1">申请分数</label><input type="number" step="0.01" value={item.points} onChange={e=>setFormBonusItems(formBonusItems.map(i=>i.id===item.id?{...i, points: e.target.value}:i))} disabled={isReadOnly} className={`w-full px-3 py-2 rounded border text-sm outline-none ${isReadOnly?'bg-transparent border-transparent px-0 font-medium text-slate-800':'border-slate-300 focus:ring-1 focus:ring-indigo-500'}`} /></div>
-                          <div><label className="block text-xs text-slate-500 mb-1">活动类型</label><input type="text" value={item.type} onChange={e=>setFormBonusItems(formBonusItems.map(i=>i.id===item.id?{...i, type: e.target.value}:i))} disabled={isReadOnly} className={`w-full px-3 py-2 rounded border text-sm outline-none ${isReadOnly?'bg-transparent border-transparent px-0 font-medium text-slate-800':'border-slate-300 focus:ring-1 focus:ring-indigo-500'}`} /></div>
-                          <div className="md:col-span-2"><label className="block text-xs text-slate-500 mb-1">活动说明</label><input type="text" value={item.description} onChange={e=>setFormBonusItems(formBonusItems.map(i=>i.id===item.id?{...i, description: e.target.value}:i))} disabled={isReadOnly} className={`w-full px-3 py-2 rounded border text-sm outline-none ${isReadOnly?'bg-transparent border-transparent px-0 font-medium text-slate-800':'border-slate-300 focus:ring-1 focus:ring-indigo-500'}`} /></div>
+                          <div><label className="block text-xs text-slate-500 mb-1">申请分数</label><input type="number" step="0.01" value={item.points} onChange={e=>setFormBonusItems(formBonusItems.map(i=>i.id===item.id?{...i, points: e.target.value}:i))} disabled={isFormDisabled} className={`w-full px-3 py-2 rounded border text-sm outline-none ${isFormDisabled?'bg-transparent border-transparent px-0 font-medium text-slate-800':'border-slate-300 focus:ring-1 focus:ring-indigo-500'}`} /></div>
+                          <div><label className="block text-xs text-slate-500 mb-1">活动类型</label><input type="text" value={item.type} onChange={e=>setFormBonusItems(formBonusItems.map(i=>i.id===item.id?{...i, type: e.target.value}:i))} disabled={isFormDisabled} className={`w-full px-3 py-2 rounded border text-sm outline-none ${isFormDisabled?'bg-transparent border-transparent px-0 font-medium text-slate-800':'border-slate-300 focus:ring-1 focus:ring-indigo-500'}`} /></div>
+                          <div className="md:col-span-2"><label className="block text-xs text-slate-500 mb-1">活动说明</label><input type="text" value={item.description} onChange={e=>setFormBonusItems(formBonusItems.map(i=>i.id===item.id?{...i, description: e.target.value}:i))} disabled={isFormDisabled} className={`w-full px-3 py-2 rounded border text-sm outline-none ${isFormDisabled?'bg-transparent border-transparent px-0 font-medium text-slate-800':'border-slate-300 focus:ring-1 focus:ring-indigo-500'}`} /></div>
                         </div>
-                        <div className={`flex flex-col md:flex-row gap-4 items-start justify-between mt-4 pt-4 border-t ${isReadOnly ? 'border-slate-200/50' : 'border-slate-100'}`}>
+                        <div className={`flex flex-col md:flex-row gap-4 items-start justify-between mt-4 pt-4 border-t ${isFormDisabled ? 'border-slate-200/50' : 'border-slate-100'}`}>
                           <div className="flex flex-col gap-2">
-                            {!isReadOnly && <label className="cursor-pointer px-3 py-1.5 bg-white border border-slate-300 rounded-md hover:bg-slate-50 transition-colors flex items-center gap-2 text-sm text-slate-700 w-max"><UploadCloud className="w-4 h-4" />上传材料<input type="file" accept="image/*" className="hidden" onChange={e=>{const f=e.target.files[0];if(f){compressImage(f, b64=>{setFormBonusItems(formBonusItems.map(i=>i.id===item.id?{...i, materialName: f.name, materialBase64: b64, aiStatus: 'Pending', aiReason: ''}:i));});}}} /></label>}
+                            {!isFormDisabled && <label className="cursor-pointer px-3 py-1.5 bg-white border border-slate-300 rounded-md hover:bg-slate-50 transition-colors flex items-center gap-2 text-sm text-slate-700 w-max"><UploadCloud className="w-4 h-4" />上传材料<input type="file" accept="image/*" className="hidden" onChange={e=>{const f=e.target.files[0];if(f){compressImage(f, b64=>{setFormBonusItems(formBonusItems.map(i=>i.id===item.id?{...i, materialName: f.name, materialBase64: b64, aiStatus: 'Pending', aiReason: ''}:i));});}}} /></label>}
                             {item.materialName ? <button onClick={()=>item.materialBase64 && setPreviewImage(item.materialBase64)} className="text-xs font-medium text-indigo-600 bg-indigo-50 px-2 py-1 rounded max-w-[200px] truncate flex items-center gap-1 hover:bg-indigo-100 transition-colors w-max"><FileText className="w-3 h-3 flex-shrink-0"/>{item.materialName}</button> : <span className="text-xs text-slate-400">无材料</span>}
                           </div>
                           
@@ -852,7 +903,7 @@
                     ))
                   )}
                 </div>
-                {!isReadOnly && <div className="mt-8 flex justify-end pt-6 border-t border-slate-100"><button onClick={handleSaveStudent} className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white px-8 py-3 rounded-lg font-medium shadow-sm transition-colors"><Save className="w-5 h-5" /> 保存我的申报数据</button></div>}
+                {!isFormDisabled && <div className="mt-8 flex justify-end pt-6 border-t border-slate-100"><button onClick={handleSaveStudent} className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white px-8 py-3 rounded-lg font-medium shadow-sm transition-colors"><Save className="w-5 h-5" /> 保存我的申报数据</button></div>}
               </div>
             )}
 
@@ -862,9 +913,8 @@
                 <div className="mb-8">
                   <label className="block text-sm font-medium text-slate-700 mb-2">官方评分文件 (支持 PDF/图片)</label>
                   <div className="flex flex-col sm:flex-row sm:items-center gap-4">
-                    {/* 移除 admin 限制，所有人皆可上传/替换文件 */}
                     <button onClick={() => fileInputRef.current?.click()} className="flex items-center justify-center gap-2 px-4 py-2 bg-white border border-slate-300 rounded-lg text-sm font-medium text-slate-700 hover:bg-slate-50 transition-colors shadow-sm w-full sm:w-auto">
-                      <UploadCloud className="w-4 h-4 text-slate-500" /> 选择/替换规则文件 (全员可用)
+                      <UploadCloud className="w-4 h-4 text-slate-500" /> 选择/替换规则文件
                     </button>
                     <input type="file" accept="application/pdf, image/*" ref={fileInputRef} onChange={handleRuleFileUpload} className="hidden" />
                     {pdfFile.name ? (
@@ -878,7 +928,7 @@
                 </div>
                 <div className="mb-6">
                   <label className="block text-sm font-medium text-slate-700 mb-2">文字补充说明 (所有人可编辑)</label>
-                  <textarea rows="8" value={aiRulesText} onChange={e=>setAiRulesText(e.target.value)} className="w-full px-4 py-3 rounded-lg border border-slate-300 focus:ring-2 focus:ring-purple-500 bg-white text-sm leading-relaxed outline-none" placeholder="在此输入赋分细则或特例豁免（例如：张三免交四六级证明）。可以参考主页的【使用说明】编写。"></textarea>
+                  <textarea rows="8" value={aiRulesText} onChange={e=>setAiRulesText(e.target.value)} className="w-full px-4 py-3 rounded-lg border border-slate-300 focus:ring-2 focus:ring-purple-500 bg-white text-sm leading-relaxed outline-none" placeholder="在此处编写细则即可"></textarea>
                 </div>
                 <div className="flex justify-end pt-4 border-t border-slate-100"><button onClick={saveAiRules} className="flex items-center gap-2 bg-purple-600 hover:bg-purple-700 text-white px-6 py-2.5 rounded-lg font-medium transition-colors shadow-sm"><Save className="w-4 h-4" /> 保存 / 补充全局规则</button></div>
               </div>
