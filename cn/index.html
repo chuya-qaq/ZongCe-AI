@@ -303,7 +303,13 @@
           setNewClassNameInput(''); setNewClassAdminPwdInput(''); setNewClassRoster([]);
           showToast("班级创建成功！", 'success');
           fetchAllData(); // 立即刷新
-        } catch (e) { showToast("创建失败，请检查网络", 'error'); console.error(e); }
+        } catch (e) { 
+          let errMsg = e.message || "未知错误";
+          if (e.code === 403) errMsg = "缺少写入权限，请到知晓云后台检查表 ACL 权限。";
+          if (e.code === 400) errMsg = "表字段不存在！请去知晓云后台为 classes 表添加对应的列(如 name, adminPwd 等)。";
+          showToast("创建失败: " + errMsg, 'error'); 
+          console.error("详细报错：", e); 
+        }
       };
 
       const initiateJoinClass = (cName) => {
@@ -985,5 +991,7 @@
     const root = createRoot(document.getElementById('root'));
     root.render(<App />);
   </script>
+</body>
+</html>
 </body>
 </html>
