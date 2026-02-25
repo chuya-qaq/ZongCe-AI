@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>综合测评与奖学金管理系统</title>
+  <title>综合测评与奖学金管理系统 (知晓云)</title>
   
   <script>
     window.addEventListener('error', function(e) {
@@ -14,6 +14,8 @@
 
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <!-- 引入知晓云 SDK 替代 Firebase -->
+  <script src="https://dl.ifanr.cn/hydrogen/sdk/latest/baas.min.js"></script>
 
   <script type="importmap">
   {
@@ -21,9 +23,6 @@
       "react": "https://esm.sh/react@18.2.0",
       "react-dom/client": "https://esm.sh/react-dom@18.2.0/client",
       "lucide-react": "https://esm.sh/lucide-react@0.263.1?external=react",
-      "firebase/app": "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js",
-      "firebase/auth": "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js",
-      "firebase/firestore": "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js",
       "xlsx": "https://esm.sh/xlsx@0.18.5"
     }
   }
@@ -40,42 +39,16 @@
       UploadCloud, AlertCircle, CheckCircle, Clock, Edit3, 
       Sparkles, FileDown, Eye, FileText, AlertTriangle, LogOut, Loader2, ShieldCheck, ListOrdered, Fingerprint, PlayCircle, Settings, HelpCircle, X
     } from 'lucide-react';
-    import { initializeApp } from 'firebase/app';
-    import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
-    import { getFirestore, doc, setDoc, getDoc, collection, onSnapshot, deleteDoc } from 'firebase/firestore';
     import * as XLSX from 'xlsx';
 
     // ==========================================
-    // 🚀 数据库配置区
+    // 🚀 知晓云与 AI 配置区
     // ==========================================
-    const localFirebaseConfig = {
-      apiKey: "AIzaSyBL8ACBb8qTeg_AwUCPGNV4XZPtPErVZZg",
-      authDomain: "zongce-ai.firebaseapp.com",
-      projectId: "zongce-ai",
-      storageBucket: "zongce-ai.firebasestorage.app",
-      messagingSenderId: "526161486669",
-      appId: "1:526161486669:web:6e211a793d85934de34d04"
-    };
-
-    let envConfig = null;
-    if (typeof __firebase_config !== 'undefined' && __firebase_config) {
-      try { envConfig = JSON.parse(__firebase_config); } catch (e) {}
-    }
-    
-    const finalConfig = envConfig || localFirebaseConfig;
-    const isConfigValid = finalConfig && finalConfig.apiKey && !finalConfig.apiKey.includes("在此填入");
-
-    let app, auth, db;
-    if (isConfigValid) {
-      try {
-        app = initializeApp(finalConfig);
-        auth = getAuth(app);
-        db = getFirestore(app);
-      } catch (e) { console.error(e); }
-    }
-    
-    const globalAppId = (typeof __app_id !== 'undefined' && __app_id) ? __app_id : 'zongce-app';
+    const CLIENT_ID = '92404b1e5268e8bb21cc';
     const aiApiKey = "sk-gjzyakonhvumcdbirrvpghlyplwyxbxqthsqefoaqonljkmw";
+    
+    // 初始化知晓云
+    BaaS.init(CLIENT_ID);
 
     const fetchWithRetry = async (url, options, retries = 3) => {
       for (let i = 0; i < retries; i++) {
@@ -90,24 +63,7 @@
       }
     };
 
-    // --- 未配置时的拦截页面 ---
-    const ConfigErrorUI = () => (
-      <div className="min-h-screen flex items-center justify-center p-6 bg-slate-900">
-        <div className="max-w-md w-full bg-white rounded-2xl p-8 shadow-2xl">
-          <div className="flex justify-center mb-6"><div className="p-4 bg-amber-100 rounded-full"><Settings className="w-12 h-12 text-amber-600 animate-spin" /></div></div>
-          <h2 className="text-2xl font-bold text-center mb-4">需要配置 Firebase 数据库</h2>
-          <p className="text-slate-600 text-sm mb-6 text-center">为了启用云端存储和排名功能，请配置您的数据库参数。</p>
-          <ol className="text-sm text-slate-700 space-y-3 list-decimal pl-4">
-            <li>前往 <b>firebase.google.com</b> 创建项目。</li>
-            <li>在设置中获取 Web SDK 配置。</li>
-            <li>将参数替换到 <b>index.html</b> 第 47 行附近的 <b>localFirebaseConfig</b> 中。</li>
-          </ol>
-        </div>
-      </div>
-    );
-
     const App = () => {
-      const [user, setUser] = useState(null);
       const [isDbReady, setIsDbReady] = useState(false);
       const [dbError, setDbError] = useState('');
       const [classesData, setClassesData] = useState({});
@@ -141,53 +97,64 @@
       const [showInstructions, setShowInstructions] = useState(false);
 
       const fileInputRef = useRef(null);
+      const currentClassRef = useRef(currentClass); // 用于在轮询中保持最新状态
       const [previewImage, setPreviewImage] = useState(null); 
       const [toast, setToast] = useState({ show: false, message: '', type: 'success' });
       const [confirmDialog, setConfirmDialog] = useState({ show: false, message: '', onConfirm: null });
 
-      useEffect(() => {
-        const initAuth = async () => {
-          try {
-            if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-              await signInWithCustomToken(auth, __initial_auth_token);
-            } else {
-              await signInAnonymously(auth);
-            }
-          } catch (error) { setDbError('数据库连接失败，请确认已开启匿名登录'); }
-        };
-        initAuth();
-        const unsubscribe = onAuthStateChanged(auth, setUser);
-        return () => unsubscribe();
-      }, []);
+      // 保持当前班级的引用最新，以便定时器能取到
+      useEffect(() => { currentClassRef.current = currentClass; }, [currentClass]);
 
-      useEffect(() => {
-        if (!user || !db) return;
-        const classesRef = collection(db, 'artifacts', globalAppId, 'public', 'data', 'classes');
-        const unsubClasses = onSnapshot(classesRef, (snapshot) => {
-          const newClasses = {};
-          snapshot.forEach(doc => { newClasses[doc.id] = doc.data(); });
-          setClassesData(newClasses);
+      // 核心引擎：定时拉取最新数据（替代 Firebase 的 onSnapshot）
+      const fetchAllData = async () => {
+        try {
+          const classTable = new BaaS.TableObject('classes');
+          const studentTable = new BaaS.TableObject('students');
           
-          if (currentClass && newClasses[currentClass]) {
+          const [cRes, sRes] = await Promise.all([
+            classTable.limit(500).find(),
+            studentTable.limit(1000).find()
+          ]);
+          
+          const newClasses = {};
+          cRes.data.objects.forEach(c => { newClasses[c.name] = c; });
+          setClassesData(newClasses);
+          setStudentsData(sRes.data.objects);
+          
+          // 若处在某个班级中，检查并更新 PDF 规则文件状态
+          const cClass = currentClassRef.current;
+          if (cClass && newClasses[cClass]) {
+            const freshData = newClasses[cClass];
             setPdfFile(prev => {
-              const freshData = newClasses[currentClass];
               if (freshData.rulesPdfBase64 !== prev.base64) {
                 return { name: freshData.rulesPdfName || '', base64: freshData.rulesPdfBase64 || '', mimeType: freshData.rulesFileMimeType || 'application/pdf' };
               }
               return prev;
             });
+            // 同步文字规则
+            setAiRulesText(prev => freshData.rulesText !== undefined ? freshData.rulesText : prev);
           }
-        });
+        } catch (e) {
+          console.error("同步数据失败", e);
+        }
+      };
 
-        const studentsRef = collection(db, 'artifacts', globalAppId, 'public', 'data', 'students');
-        const unsubStudents = onSnapshot(studentsRef, (snapshot) => {
-          const newStudents = [];
-          snapshot.forEach(doc => { newStudents.push({ id: doc.id, ...doc.data() }); });
-          setStudentsData(newStudents);
-          setIsDbReady(true);
-        });
-        return () => { unsubClasses(); unsubStudents(); };
-      }, [user, currentClass]);
+      useEffect(() => {
+        const initAuth = async () => {
+          try {
+            await BaaS.auth.anonymousLogin();
+            await fetchAllData();
+            setIsDbReady(true);
+          } catch (error) { 
+            setDbError('连接知晓云失败，请确认是否已配置本地安全域名(http://localhost)'); 
+          }
+        };
+        initAuth();
+        
+        // 轮询机制：每 3 秒刷新一次数据，实现"实时互联"
+        const timer = setInterval(fetchAllData, 3000);
+        return () => clearInterval(timer);
+      }, []);
 
       const showToast = (message, type = 'success') => {
         setToast({ show: true, message, type });
@@ -238,6 +205,7 @@
         }).sort((a, b) => b.totalScore - a.totalScore);
       }, [currentStudents]);
 
+      // 解析名单
       const handleRosterUpload = async (e) => {
         const file = e.target.files[0]; if (!file) return;
         setIsAiParsingRoster(true); showToast("正在智能提取名单，请稍候...", 'success');
@@ -287,20 +255,27 @@
         } finally { setIsAiParsingRoster(false); e.target.value = ''; }
       };
 
+      // 核心写操作：创建班级
       const handleCreateClass = async () => {
         const cName = newClassNameInput.trim();
-        if (!cName || classesData[cName]) return showToast("班级名称不能为空或已存在", 'error');
+        if (!cName) return showToast("班级名称不能为空", 'error');
+        if (classesData[cName]) return showToast("班级名称已存在", 'error');
         if (!newClassAdminPwdInput.trim()) return showToast("管理员密码不能为空", 'error');
         if (newClassRoster.length === 0) return showToast("必须先导入班级名单", 'error');
 
         try {
-          await setDoc(doc(db, 'artifacts', globalAppId, 'public', 'data', 'classes', cName), {
+          const Table = new BaaS.TableObject('classes');
+          const record = Table.create();
+          await record.set({
+            name: cName, 
             rulesText: "在此处编写细则即可", rulesPdfBase64: "", rulesPdfName: "", rulesFileMimeType: "application/pdf", 
             adminPwd: newClassAdminPwdInput.trim(), roster: newClassRoster
-          });
+          }).save();
+          
           setNewClassNameInput(''); setNewClassAdminPwdInput(''); setNewClassRoster([]);
           showToast("班级创建成功！", 'success');
-        } catch { showToast("创建失败，请检查网络", 'error'); }
+          fetchAllData(); // 立即刷新
+        } catch (e) { showToast("创建失败，请检查网络", 'error'); console.error(e); }
       };
 
       const initiateJoinClass = (cName) => {
@@ -341,21 +316,34 @@
         setViewState('lobby');
       };
 
+      // 核心写操作：删除班级
       const handleDeleteClassByAdmin = () => {
         setConfirmDialog({
           show: true, message: "⚠️ 警告：这将永久删除该班级及其所有学生的申报数据！不可恢复，确定继续吗？",
           onConfirm: async () => {
             try {
+              // 1. 删除该班所有学生
+              const studentTable = new BaaS.TableObject('students');
               const studentsToDelete = studentsData.filter(s => s.className === currentClass);
-              for (const s of studentsToDelete) await deleteDoc(doc(db, 'artifacts', globalAppId, 'public', 'data', 'students', s.id));
-              await deleteDoc(doc(db, 'artifacts', globalAppId, 'public', 'data', 'classes', currentClass));
+              for (const s of studentsToDelete) {
+                await studentTable.delete(s.id);
+              }
+              // 2. 删除班级本身
+              const classTable = new BaaS.TableObject('classes');
+              const classRecord = classesData[currentClass];
+              if (classRecord && classRecord.id) {
+                await classTable.delete(classRecord.id);
+              }
+              
               handleLeaveClass(); setConfirmDialog({ show: false, message: '', onConfirm: null });
               showToast("班级已彻底删除", 'success');
-            } catch (error) { showToast("删除失败", 'error'); }
+              fetchAllData();
+            } catch (error) { showToast("删除失败", 'error'); console.error(error); }
           }
         });
       };
 
+      // 核心写操作：保存学生成绩
       const handleSaveStudent = async () => {
         if (!formOriginalGrade) return showToast("原始成绩必填", 'error');
         try {
@@ -376,13 +364,24 @@
              return showToast("⚠️ 数据总大小超出 900KB 限制！请删减部分图片或重新上传更小的截图。", 'error');
           }
 
-          await setDoc(doc(db, 'artifacts', globalAppId, 'public', 'data', 'students', `${currentClass}_${currentStudentId}`), payload);
+          const studentTable = new BaaS.TableObject('students');
+          if (existingStudent && existingStudent.id) {
+            // 更新记录
+            let record = studentTable.getWithoutData(existingStudent.id);
+            await record.set(payload).update();
+          } else {
+            // 新建记录
+            let record = studentTable.create();
+            await record.set(payload).save();
+          }
+          
           showToast(`数据保存成功 (第 ${nextModCount} 次提交)！AI审核将由管理员统一进行`, 'success'); 
+          fetchAllData();
           setActiveTab('ranking');
-        } catch { showToast("保存失败，请检查网络", 'error'); }
+        } catch (e) { showToast("保存失败，请检查网络", 'error'); console.error(e); }
       };
 
-      // --- 核心：极严苛防御型 AI 推演引擎 ---
+      // 核心：AI 审核引擎
       const processAI = async (items, studentName) => {
         const updated = [...items];
         const rules = classesData[currentClass]?.rulesText || '';
@@ -394,7 +393,6 @@
           if (it.aiStatus !== 'Pending' && it.aiStatus) continue;
           if (!it.points || !it.description) continue;
 
-          // 净化了负面词汇，但依然保持极度严格的审核逻辑
           const prompt = "你是一个极度严谨的大学奖学金与综测审核AI，需确保所有申报真实、合规。\n" +
             "【当前审核学生】: " + studentName + "\n" +
             "【评分细则】: " + rules + "\n" +
@@ -431,36 +429,38 @@
         return updated;
       };
 
+      // 核心写操作：AI 批量审核
       const handleBatchAudit = async () => {
         const targets = currentStudents.filter(s => s.bonusItems?.some(i => i.aiStatus === 'Pending' || !i.aiStatus));
         if (!targets.length) return showToast("当前班级没有任何待审核的项目", 'success');
         
         setIsBatching(true);
+        const studentTable = new BaaS.TableObject('students');
+        
         for (let i = 0; i < targets.length; i++) {
           const s = targets[i]; 
+          if (!s.id) continue;
+          
           setBatchProgress(`正在审核: ${s.name} (${i+1}/${targets.length})`);
           
-          const studentDocRef = doc(db, 'artifacts', globalAppId, 'public', 'data', 'students', `${currentClass}_${s.studentId}`);
-
-          // 乐观锁：锁定状态并阻止并发
-          await setDoc(studentDocRef, { isAiProcessing: true }, { merge: true });
+          // 乐观锁：锁定状态
+          await studentTable.getWithoutData(s.id).set({ isAiProcessing: true }).update();
 
           const items = await processAI(s.bonusItems, s.name);
 
           try {
-            const freshSnap = await getDoc(studentDocRef);
-            if (freshSnap.exists()) {
-              const freshData = freshSnap.data();
-              if (freshData.lastUpdateTime && freshData.lastUpdateTime !== s.lastUpdateTime) {
-                // 如果发现锁时间戳不匹配，说明学生在这几秒利用强制刷新改了数据，立即抛弃 AI 结果
-                const resetItems = freshData.bonusItems.map(item => ({
-                  ...item, aiStatus: 'Pending', aiReason: '数据在审核期间被修改，AI审核结果已废弃，需重新排队审核'
-                }));
-                await setDoc(studentDocRef, { ...freshData, bonusItems: resetItems, isAiProcessing: false });
-                showToast(`检测到 ${s.name} 数据在审核中发生变动，已废弃本次结果。`, 'error');
-              } else {
-                await setDoc(studentDocRef, { ...freshData, bonusItems: items, isAiProcessing: false });
-              }
+            // 取回最新数据检查锁
+            const freshSnap = await studentTable.get(s.id);
+            const freshData = freshSnap.data;
+            
+            if (freshData.lastUpdateTime && freshData.lastUpdateTime !== s.lastUpdateTime) {
+              const resetItems = freshData.bonusItems.map(item => ({
+                ...item, aiStatus: 'Pending', aiReason: '数据在审核期间被修改，AI审核结果已废弃，需重新排队审核'
+              }));
+              await studentTable.getWithoutData(s.id).set({ bonusItems: resetItems, isAiProcessing: false }).update();
+              showToast(`检测到 ${s.name} 数据在审核中发生变动，已废弃本次结果。`, 'error');
+            } else {
+              await studentTable.getWithoutData(s.id).set({ bonusItems: items, isAiProcessing: false }).update();
             }
           } catch (err) {
             console.error("写回数据失败:", err);
@@ -468,10 +468,12 @@
           
           if (i < targets.length - 1) await new Promise(r => setTimeout(r, 2500));
         }
-        setIsBatching(false); showToast("批量流水线审核完成！", 'success');
+        setIsBatching(false); 
+        fetchAllData();
+        showToast("批量流水线审核完成！", 'success');
       };
 
-      // 导出简表：保留修改次数列 (总计 9 列)
+      // 导出简表
       const exportSimpleTable = () => {
         if (!rankedStudents.length) return showToast("当前没有数据可导出", 'error');
         const aoa = [[`${currentClass}班综合测评简表`], [], ["排名", "姓名", "学号", "基础成绩", "申报加分总计", "折算加分(Max 3)", "最终总分", "修改次数", "异常状态"]];
@@ -484,7 +486,7 @@
         XLSX.writeFile(wb, `${currentClass}_专业综测简表.xlsx`);
       };
 
-      // 导出明细表：保留修改次数列 (总计 10 列)
+      // 导出明细表
       const exportTable = () => {
         if (!rankedStudents.length) return showToast("当前没有数据可导出", 'error');
         const aoa = [[`${currentClass}综测加分明细表`], [], ["排名", "姓名", "学号", "原始成绩", "参与活动", "活动分数", "总申报分", "折算加分", "修改次数", "AI审核状态"]];
@@ -513,10 +515,6 @@
         setIsReadOnly(true); setActiveTab('application');
       };
 
-      const updateBonusItem = (id, field, value) => {
-        setFormBonusItems(prev => prev.map(item => item.id === id ? { ...item, [field]: value, aiStatus: 'Pending', aiReason: '' } : item));
-      };
-
       const handleRuleFileUpload = (e) => {
         const file = e.target.files[0]; if (!file) return;
         if (!file.type.startsWith('image/') && file.type !== 'application/pdf') return showToast("仅支持 PDF 或图片文件", 'error'); 
@@ -537,8 +535,12 @@
         }
       };
 
+      // 核心写操作：保存 AI 规则
       const saveAiRules = async () => {
         try {
+          const classRecord = classesData[currentClass];
+          if (!classRecord || !classRecord.id) return showToast("找不到对应的班级记录", 'error');
+          
           const payload = { rulesText: aiRulesText };
           if (pdfFile && pdfFile.base64) {
             payload.rulesPdfName = pdfFile.name;
@@ -551,8 +553,11 @@
              return showToast("⚠️ 规则文件总大小超出 900KB 限制！请压缩或精简内容后重试。", 'error');
           }
 
-          await setDoc(doc(db, 'artifacts', globalAppId, 'public', 'data', 'classes', currentClass), payload, { merge: true });
+          const classTable = new BaaS.TableObject('classes');
+          await classTable.getWithoutData(classRecord.id).set(payload).update();
+          
           showToast("保存成功！AI 审核细则已全局生效", 'success');
+          fetchAllData();
         } catch (error) { 
           console.error("保存失败详情:", error);
           showToast("规则保存失败：可能是文件体积过大或网络无响应", 'error'); 
@@ -595,7 +600,6 @@
             </div>
           )}
           
-          {/* 万字级保姆系统使用说明 */}
           {showInstructions && (
             <div className="fixed inset-0 z-[200] bg-slate-900/50 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-200">
               <div className="bg-white rounded-2xl p-6 md:p-8 max-w-3xl w-full shadow-2xl max-h-[90vh] overflow-y-auto transform scale-100 animate-in zoom-in-95 duration-200">
@@ -632,13 +636,6 @@
                         </div>
                         <p className="text-xs text-red-500 mt-2 font-bold">⚠️ 注意：AI 内置了“防特权泛化机制”。如果规则仅设定了张三的特权，其他未交材料的同学强行套用，AI 会客观识别并予以驳回。</p>
                       </div>
-
-                      <div>
-                        <strong className="text-indigo-900 block mb-1">▶ 案例C：防信息混淆指令（确保精准核查）</strong>
-                        <div className="bg-white text-slate-700 p-3 rounded-lg border border-indigo-200 text-xs">
-                          “必须核对证明材料上的名字是否属于本人。如果名字不符，或者截图是完全无关的风景照，或者证书级别不匹配，必须以‘信息不符’为由予以驳回。”
-                        </div>
-                      </div>
                     </div>
                   </div>
                 </div>
@@ -650,6 +647,18 @@
           )}
         </React.Fragment>
       );
+
+      if (!isDbReady) {
+         return (
+           <div className="min-h-screen flex items-center justify-center p-6 bg-slate-50">
+             <div className="max-w-md w-full bg-white rounded-2xl p-8 shadow-2xl flex flex-col items-center">
+               <Loader2 className="w-10 h-10 text-indigo-600 animate-spin mb-4" />
+               <h2 className="text-xl font-bold text-slate-800 mb-2">正在连接知晓云</h2>
+               <p className="text-sm text-slate-500 text-center">{dbError || "初始化国内直连通道中..."}</p>
+             </div>
+           </div>
+         );
+      }
 
       if (viewState === 'lobby') {
         return (
@@ -667,8 +676,8 @@
                 <div className="p-4 bg-indigo-100 rounded-full mb-4">
                   <Trophy className="w-10 h-10 text-indigo-600" />
                 </div>
-                <h1 className="text-3xl font-bold text-slate-800 text-center">综合测评与奖学金管理系统</h1>
-                <p className="text-slate-500 mt-2 text-center">选择您的班级以参与评定，或创建新评定项目</p>
+                <h1 className="text-3xl font-bold text-slate-800 text-center">综合测评系统 <span className="text-indigo-500 text-lg align-top relative -top-1">知晓云版</span></h1>
+                <p className="text-slate-500 mt-2 text-center">系统已成功通过 ClientID 直连云端，请选择班级加入</p>
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
                 <div className="bg-slate-50 rounded-xl p-6 border border-slate-200">
@@ -907,7 +916,6 @@
                 <div className="mb-8">
                   <label className="block text-sm font-medium text-slate-700 mb-2">官方评分文件 (支持 PDF/图片)</label>
                   <div className="flex flex-col sm:flex-row sm:items-center gap-4">
-                    {/* 移除 admin 限制，所有人皆可上传/替换文件 */}
                     <button onClick={() => fileInputRef.current?.click()} className="flex items-center justify-center gap-2 px-4 py-2 bg-white border border-slate-300 rounded-lg text-sm font-medium text-slate-700 hover:bg-slate-50 transition-colors shadow-sm w-full sm:w-auto">
                       <UploadCloud className="w-4 h-4 text-slate-500" /> 选择/替换规则文件
                     </button>
@@ -934,11 +942,7 @@
     };
 
     const root = createRoot(document.getElementById('root'));
-    if (!isConfigValid) {
-      root.render(<ConfigErrorUI />);
-    } else {
-      root.render(<App />);
-    }
+    root.render(<App />);
   </script>
 </body>
 </html>
