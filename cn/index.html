@@ -25,6 +25,9 @@
     }
   }
   </script>
+  
+  <!-- 知晓云本地 SDK (直接调用同级目录文件) -->
+  <script src="./baas.min.js"></script>
 </head>
 <body class="bg-slate-50 min-h-screen text-slate-900 font-sans">
   <div id="root"></div>
@@ -100,10 +103,9 @@
       const [toast, setToast] = useState({ show: false, message: '', type: 'success' });
       const [confirmDialog, setConfirmDialog] = useState({ show: false, message: '', onConfirm: null });
 
-      // 保持当前班级的引用最新，以便定时器能取到
       useEffect(() => { currentClassRef.current = currentClass; }, [currentClass]);
 
-      // 核心引擎一：动态多节点 SDK 加载器（防广告插件屏蔽）
+      // 1. 初始化 SDK (完全调用本地同级目录的 baas.min.js)
       useEffect(() => {
         const loadSDK = async () => {
           if (window.BaaS) {
@@ -111,34 +113,21 @@
             setSdkReady(true);
             return;
           }
-          // 官方主节点 + 全球分发备用节点
-          const cdns = [
-            "https://dl.ifanr.cn/hydrogen/sdk/latest/baas.min.js",
-            "https://unpkg.com/minapp-sdk@3.22.4/dist/web/baas.js",
-            "https://cdn.jsdelivr.net/npm/minapp-sdk@3.22.4/dist/web/baas.js"
-          ];
-          for (let src of cdns) {
-            try {
-              await new Promise((resolve, reject) => {
-                const script = document.createElement('script');
-                script.src = src;
-                script.onload = resolve;
-                script.onerror = reject;
-                document.head.appendChild(script);
-              });
-              window.BaaS.init(CLIENT_ID);
-              setSdkReady(true);
-              return;
-            } catch (e) {
-              console.warn(`SDK节点被拦截: ${src}，正在尝试备用通道...`);
-            }
-          }
-          setSdkError('防屏蔽通道建立失败。您的浏览器正处于极严格的拦截模式，请尝试关闭广告拦截插件、更换网络，或使用其他浏览器打开。');
+          
+          // 如果头部标签因某种原因未加载完，采用本地动态加载兜底
+          const script = document.createElement('script');
+          script.src = "./baas.min.js";
+          script.onload = () => {
+            window.BaaS.init(CLIENT_ID);
+            setSdkReady(true);
+          };
+          script.onerror = () => setSdkError('本地 SDK 加载失败，请确认 baas.min.js 文件确实与 index.html 位于同一目录下。');
+          document.head.appendChild(script);
         };
         loadSDK();
       }, []);
 
-      // 核心引擎二：定时拉取最新数据（替代 Firebase 的 onSnapshot）
+      // 2. 数据轮询引擎
       const fetchAllData = async () => {
         if (!window.BaaS) return;
         try {
