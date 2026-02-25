@@ -14,8 +14,6 @@
 
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-  <!-- 引入知晓云 SDK 替代 Firebase -->
-  <script src="https://dl.ifanr.cn/hydrogen/sdk/latest/baas.min.js"></script>
 
   <script type="importmap">
   {
@@ -46,13 +44,6 @@
     // ==========================================
     const CLIENT_ID = '92404b1e5268e8bb21cc';
     const aiApiKey = "sk-gjzyakonhvumcdbirrvpghlyplwyxbxqthsqefoaqonljkmw";
-    
-    // 安全初始化知晓云 (加入 window 前缀防报错)
-    if (window.BaaS) {
-      window.BaaS.init(CLIENT_ID);
-    } else {
-      console.error("知晓云 SDK 未加载，请检查网络或关闭拦截插件");
-    }
 
     const fetchWithRetry = async (url, options, retries = 3) => {
       for (let i = 0; i < retries; i++) {
@@ -99,6 +90,9 @@
       const [isBatching, setIsBatching] = useState(false);
       const [batchProgress, setBatchProgress] = useState('');
       const [showInstructions, setShowInstructions] = useState(false);
+      
+      const [sdkReady, setSdkReady] = useState(false);
+      const [sdkError, setSdkError] = useState('');
 
       const fileInputRef = useRef(null);
       const currentClassRef = useRef(currentClass); // 用于在轮询中保持最新状态
@@ -109,7 +103,42 @@
       // 保持当前班级的引用最新，以便定时器能取到
       useEffect(() => { currentClassRef.current = currentClass; }, [currentClass]);
 
-      // 核心引擎：定时拉取最新数据（替代 Firebase 的 onSnapshot）
+      // 核心引擎一：动态多节点 SDK 加载器（防广告插件屏蔽）
+      useEffect(() => {
+        const loadSDK = async () => {
+          if (window.BaaS) {
+            window.BaaS.init(CLIENT_ID);
+            setSdkReady(true);
+            return;
+          }
+          // 官方主节点 + 全球分发备用节点
+          const cdns = [
+            "https://dl.ifanr.cn/hydrogen/sdk/latest/baas.min.js",
+            "https://unpkg.com/minapp-sdk@3.22.4/dist/web/baas.js",
+            "https://cdn.jsdelivr.net/npm/minapp-sdk@3.22.4/dist/web/baas.js"
+          ];
+          for (let src of cdns) {
+            try {
+              await new Promise((resolve, reject) => {
+                const script = document.createElement('script');
+                script.src = src;
+                script.onload = resolve;
+                script.onerror = reject;
+                document.head.appendChild(script);
+              });
+              window.BaaS.init(CLIENT_ID);
+              setSdkReady(true);
+              return;
+            } catch (e) {
+              console.warn(`SDK节点被拦截: ${src}，正在尝试备用通道...`);
+            }
+          }
+          setSdkError('防屏蔽通道建立失败。您的浏览器正处于极严格的拦截模式，请尝试关闭广告拦截插件、更换网络，或使用其他浏览器打开。');
+        };
+        loadSDK();
+      }, []);
+
+      // 核心引擎二：定时拉取最新数据（替代 Firebase 的 onSnapshot）
       const fetchAllData = async () => {
         if (!window.BaaS) return;
         try {
@@ -145,9 +174,10 @@
       };
 
       useEffect(() => {
+        if (!sdkReady) return;
         const initAuth = async () => {
           if (!window.BaaS) {
-            setDbError('知晓云 SDK 被浏览器拦截。请尝试关闭“广告拦截插件”或更换网络后刷新页面。');
+            setDbError('知晓云 SDK 异常被拦截。');
             return;
           }
           try {
@@ -163,7 +193,7 @@
         // 轮询机制：每 3 秒刷新一次数据，实现"实时互联"
         const timer = setInterval(fetchAllData, 3000);
         return () => clearInterval(timer);
-      }, []);
+      }, [sdkReady]);
 
       const showToast = (message, type = 'success') => {
         setToast({ show: true, message, type });
@@ -657,13 +687,26 @@
         </React.Fragment>
       );
 
-      if (!isDbReady) {
+      if (sdkError) {
+        return (
+          <div className="min-h-screen flex items-center justify-center p-6 bg-slate-50">
+            <div className="max-w-md w-full bg-white rounded-2xl p-8 shadow-2xl flex flex-col items-center text-center">
+              <AlertTriangle className="w-12 h-12 text-red-500 mb-4" />
+              <h2 className="text-xl font-bold text-slate-800 mb-2">网络请求被拦截</h2>
+              <p className="text-sm text-slate-500 mb-6">{sdkError}</p>
+              <button onClick={() => window.location.reload()} className="bg-slate-800 text-white px-6 py-2 rounded-lg text-sm transition-colors hover:bg-slate-700">重试刷新</button>
+            </div>
+          </div>
+        );
+      }
+
+      if (!sdkReady || !isDbReady) {
          return (
            <div className="min-h-screen flex items-center justify-center p-6 bg-slate-50">
              <div className="max-w-md w-full bg-white rounded-2xl p-8 shadow-2xl flex flex-col items-center">
                <Loader2 className="w-10 h-10 text-indigo-600 animate-spin mb-4" />
-               <h2 className="text-xl font-bold text-slate-800 mb-2">正在连接知晓云</h2>
-               <p className="text-sm text-slate-500 text-center">{dbError || "初始化国内直连通道中..."}</p>
+               <h2 className="text-xl font-bold text-slate-800 mb-2">正在建立云端连接</h2>
+               <p className="text-sm text-slate-500 text-center">{!sdkReady ? "正在启动防拦截通道加载核心组件..." : (dbError || "初始化国内直连通道中...")}</p>
              </div>
            </div>
          );
