@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>综合测评与奖学金管理系统 (知晓云)</title>
+  <title>综合测评与奖学金管理系统 (知晓云国内版)</title>
   
   <script>
     window.addEventListener('error', function(e) {
@@ -47,8 +47,12 @@
     const CLIENT_ID = '92404b1e5268e8bb21cc';
     const aiApiKey = "sk-gjzyakonhvumcdbirrvpghlyplwyxbxqthsqefoaqonljkmw";
     
-    // 初始化知晓云
-    BaaS.init(CLIENT_ID);
+    // 安全初始化知晓云 (加入 window 前缀防报错)
+    if (window.BaaS) {
+      window.BaaS.init(CLIENT_ID);
+    } else {
+      console.error("知晓云 SDK 未加载，请检查网络或关闭拦截插件");
+    }
 
     const fetchWithRetry = async (url, options, retries = 3) => {
       for (let i = 0; i < retries; i++) {
@@ -107,9 +111,10 @@
 
       // 核心引擎：定时拉取最新数据（替代 Firebase 的 onSnapshot）
       const fetchAllData = async () => {
+        if (!window.BaaS) return;
         try {
-          const classTable = new BaaS.TableObject('classes');
-          const studentTable = new BaaS.TableObject('students');
+          const classTable = new window.BaaS.TableObject('classes');
+          const studentTable = new window.BaaS.TableObject('students');
           
           const [cRes, sRes] = await Promise.all([
             classTable.limit(500).find(),
@@ -141,8 +146,12 @@
 
       useEffect(() => {
         const initAuth = async () => {
+          if (!window.BaaS) {
+            setDbError('知晓云 SDK 被浏览器拦截。请尝试关闭“广告拦截插件”或更换网络后刷新页面。');
+            return;
+          }
           try {
-            await BaaS.auth.anonymousLogin();
+            await window.BaaS.auth.anonymousLogin();
             await fetchAllData();
             setIsDbReady(true);
           } catch (error) { 
@@ -264,7 +273,7 @@
         if (newClassRoster.length === 0) return showToast("必须先导入班级名单", 'error');
 
         try {
-          const Table = new BaaS.TableObject('classes');
+          const Table = new window.BaaS.TableObject('classes');
           const record = Table.create();
           await record.set({
             name: cName, 
@@ -323,13 +332,13 @@
           onConfirm: async () => {
             try {
               // 1. 删除该班所有学生
-              const studentTable = new BaaS.TableObject('students');
+              const studentTable = new window.BaaS.TableObject('students');
               const studentsToDelete = studentsData.filter(s => s.className === currentClass);
               for (const s of studentsToDelete) {
                 await studentTable.delete(s.id);
               }
               // 2. 删除班级本身
-              const classTable = new BaaS.TableObject('classes');
+              const classTable = new window.BaaS.TableObject('classes');
               const classRecord = classesData[currentClass];
               if (classRecord && classRecord.id) {
                 await classTable.delete(classRecord.id);
@@ -364,7 +373,7 @@
              return showToast("⚠️ 数据总大小超出 900KB 限制！请删减部分图片或重新上传更小的截图。", 'error');
           }
 
-          const studentTable = new BaaS.TableObject('students');
+          const studentTable = new window.BaaS.TableObject('students');
           if (existingStudent && existingStudent.id) {
             // 更新记录
             let record = studentTable.getWithoutData(existingStudent.id);
@@ -435,7 +444,7 @@
         if (!targets.length) return showToast("当前班级没有任何待审核的项目", 'success');
         
         setIsBatching(true);
-        const studentTable = new BaaS.TableObject('students');
+        const studentTable = new window.BaaS.TableObject('students');
         
         for (let i = 0; i < targets.length; i++) {
           const s = targets[i]; 
@@ -553,7 +562,7 @@
              return showToast("⚠️ 规则文件总大小超出 900KB 限制！请压缩或精简内容后重试。", 'error');
           }
 
-          const classTable = new BaaS.TableObject('classes');
+          const classTable = new window.BaaS.TableObject('classes');
           await classTable.getWithoutData(classRecord.id).set(payload).update();
           
           showToast("保存成功！AI 审核细则已全局生效", 'success');
