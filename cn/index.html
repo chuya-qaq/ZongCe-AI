@@ -97,6 +97,9 @@
       const [sdkReady, setSdkReady] = useState(false);
       const [sdkError, setSdkError] = useState('');
 
+      const [isEditingRules, setIsEditingRules] = useState(false);
+      const isEditingRulesRef = useRef(false);
+
       const fileInputRef = useRef(null);
       const currentClassRef = useRef(currentClass); // 用于在轮询中保持最新状态
       const [previewImage, setPreviewImage] = useState(null); 
@@ -104,6 +107,7 @@
       const [confirmDialog, setConfirmDialog] = useState({ show: false, message: '', onConfirm: null });
 
       useEffect(() => { currentClassRef.current = currentClass; }, [currentClass]);
+      useEffect(() => { isEditingRulesRef.current = isEditingRules; }, [isEditingRules]);
 
       // 1. 初始化 SDK (完全调用本地同级目录的 baas.min.js)
       useEffect(() => {
@@ -154,8 +158,10 @@
               }
               return prev;
             });
-            // 同步文字规则
-            setAiRulesText(prev => freshData.rulesText !== undefined ? freshData.rulesText : prev);
+            // 同步文字规则 (加入防覆盖机制：如果在打字，则暂停同步)
+            if (!isEditingRulesRef.current) {
+              setAiRulesText(prev => freshData.rulesText !== undefined ? freshData.rulesText : prev);
+            }
           }
         } catch (e) {
           console.error("同步数据失败", e);
@@ -369,6 +375,14 @@
                 await classTable.delete(classRecord.id);
               }
               
+              // 3. 立即清理本地状态缓存，防止刷新延迟导致数据残留
+              setClassesData(prev => {
+                const newData = { ...prev };
+                delete newData[currentClass];
+                return newData;
+              });
+              setStudentsData(prev => prev.filter(s => s.className !== currentClass));
+              
               handleLeaveClass(); setConfirmDialog({ show: false, message: '', onConfirm: null });
               showToast("班级已彻底删除", 'success');
               fetchAllData();
@@ -433,13 +447,12 @@
             "【加分申报】: 申请 " + it.points + " 分; 类型: " + it.type + "; 描述: " + it.description + "\n" +
             "【材料证明】: " + (it.materialName ? "已上传图片(务必用视觉能力逐字核实图片文字是否与申报描述完全一致！)" : "未上传材料") + "\n\n" +
             "【终极审核铁律】:\n" +
-            "1. 严格视觉核验：若上传了材料，必须阅读图片文字！如图片是风景、无关截图，或级别不符(如填一等奖但图是三等奖)，立即 Reject 并说明：“图片内容与申报不符”。\n" +
-            "2. 交叉信息比对：仔细核对图片上的【姓名】是否包含 " + studentName + "，【奖项级别/活动名称】是否与描述完全一致！哪怕其他信息全对，只要有一项核心信息对不上，必须 Reject 并说明：“关键信息核验未通过”。\n" +
-            "3. 分数规范核查：对比细则上限。若申请分数大于规则允许的最高分，Reject 并说明：“申报分数超过细则规定”。\n" +
-            "4. 证据前置原则：如未上传材料，去细则查找是否有针对此人("+studentName+")的免责特权。若无明确豁免，无论描述多详细，一律 Reject 并说明：“未提供有效证明材料”。\n" +
-            "5. 严禁特权泛化：若细则写张三免材料，必须核对上方【当前审核学生】名字是否为张三，绝不可将此特权套用于他人！\n" +
+            "1. 全面核查：你必须检查所有可能存在的问题（如：分数是否超出细则上限、截图文字是否包含本人姓名、奖项级别是否与细则完全匹配、材料是否缺失等）。\n" +
+            "2. 详尽驳回原因：一旦发现问题，必须在 reason 中指出**所有**不符合项的详细原因，绝不能使用“关键信息核验未通过”等笼统词汇！例如你需要像这样具体输出：“1. 申报分数(5分)超过细则规定的最高分(3分)；2. 截图中未找到申报人姓名张三。”\n" +
+            "3. 证据前置原则：如未上传材料，去细则查找是否有针对此人("+studentName+")的免责特权。若无明确豁免，无论描述多详细，一律 Reject 并说明：“未提供有效证明材料”。\n" +
+            "4. 严禁特权泛化：若细则写张三免材料，必须核对上方【当前审核学生】名字是否为张三，绝不可套用于他人！\n" +
             "绝对输出指令：必须且只能返回一个合法的 JSON 对象，不许出现Markdown：\n" +
-            "{\"status\": \"Approve\"|\"Reject\"|\"Manual Review\", \"reason\": \"在此填写15字以内的中文裁决原因\"}";
+            "{\"status\": \"Approve\"|\"Reject\"|\"Manual Review\", \"reason\": \"在此填写详细且具体的中文裁决原因\"}";
 
           try {
             const content = [{ type: "text", text: prompt }];
@@ -512,7 +525,7 @@
         if (!rankedStudents.length) return showToast("当前没有数据可导出", 'error');
         const aoa = [[`${currentClass}班综合测评简表`], [], ["排名", "姓名", "学号", "基础成绩", "申报加分总计", "折算加分(Max 3)", "最终总分", "修改次数", "异常状态"]];
         rankedStudents.forEach((s, idx) => {
-          const statusStr = s.hasAiWarning ? "有异常或驳回" : "正常通过";
+          const statusStr = s.hasAiWarning ? "异常" : "正常通过";
           aoa.push([ idx+1, s.name, s.studentId, s.originalGrade, s.rawBonus, s.scaledBonus, s.totalScore, s.modCount || 0, statusStr ]);
         });
         const ws = XLSX.utils.aoa_to_sheet(aoa); ws['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 8 } }];
@@ -752,19 +765,19 @@
                   <h2 className="text-lg font-bold text-slate-800 mb-4 flex items-center gap-2"><ShieldCheck className="w-5 h-5 text-indigo-500" /> 创建新班级</h2>
                   <div className="space-y-4">
                     <div>
-                      <label className="block text-sm font-medium text-slate-700 mb-1">班级名称</label>
-                      <input type="text" className="w-full px-4 py-2.5 rounded-lg border border-slate-300 outline-none focus:ring-2 focus:ring-indigo-500" value={newClassNameInput} onChange={e => setNewClassNameInput(e.target.value)} />
+                      <label htmlFor="newClassName" className="block text-sm font-medium text-slate-700 mb-1">班级名称</label>
+                      <input id="newClassName" name="newClassName" type="text" className="w-full px-4 py-2.5 rounded-lg border border-slate-300 outline-none focus:ring-2 focus:ring-indigo-500" value={newClassNameInput} onChange={e => setNewClassNameInput(e.target.value)} />
                     </div>
                     <div>
-                      <label className="block text-sm font-medium text-slate-700 mb-1">管理员密码</label>
-                      <input type="password" placeholder="设置管理员密码 (必填)" className="w-full px-4 py-2.5 rounded-lg border border-slate-300 outline-none focus:ring-2 focus:ring-indigo-500" value={newClassAdminPwdInput} onChange={e => setNewClassAdminPwdInput(e.target.value)} />
+                      <label htmlFor="newAdminPwd" className="block text-sm font-medium text-slate-700 mb-1">管理员密码</label>
+                      <input id="newAdminPwd" name="newAdminPwd" type="password" placeholder="设置管理员密码 (必填)" className="w-full px-4 py-2.5 rounded-lg border border-slate-300 outline-none focus:ring-2 focus:ring-indigo-500" value={newClassAdminPwdInput} onChange={e => setNewClassAdminPwdInput(e.target.value)} />
                     </div>
                     <div className="pt-4 mt-2 border-t border-indigo-100">
-                      <label className="block text-sm font-medium text-slate-700 mb-1">导入班级名单 (支持 Excel/图片/CSV)</label>
-                      <label className={`cursor-pointer flex items-center justify-center w-full py-2.5 bg-white border border-dashed border-indigo-300 rounded-lg hover:bg-indigo-50 text-indigo-700 text-sm font-medium ${isAiParsingRoster ? 'opacity-50 pointer-events-none' : ''}`}>
+                      <label htmlFor="rosterUpload" className="block text-sm font-medium text-slate-700 mb-1">导入班级名单 (支持 Excel/图片/CSV)</label>
+                      <label htmlFor="rosterUpload" className={`cursor-pointer flex items-center justify-center w-full py-2.5 bg-white border border-dashed border-indigo-300 rounded-lg hover:bg-indigo-50 text-indigo-700 text-sm font-medium ${isAiParsingRoster ? 'opacity-50 pointer-events-none' : ''}`}>
                         {isAiParsingRoster ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <UploadCloud className="w-4 h-4 mr-2" />} 
                         {isAiParsingRoster ? 'AI 正在提取中...' : '选择表格/图片让 AI 提取'}
-                        <input type="file" accept=".csv, .txt, .xlsx, .xls, image/*" className="hidden" onChange={handleRosterUpload} disabled={isAiParsingRoster} />
+                        <input id="rosterUpload" name="rosterUpload" type="file" accept=".csv, .txt, .xlsx, .xls, image/*" className="hidden" onChange={handleRosterUpload} disabled={isAiParsingRoster} />
                       </label>
                       {newClassRoster.length > 0 && !isAiParsingRoster && (
                          <div className="mt-2 text-xs text-green-600 bg-green-50 px-3 py-1.5 rounded-md flex items-center gap-1"><CheckCircle className="w-3.5 h-3.5"/> 已锁定 {newClassRoster.length} 名学生名单</div>
@@ -793,11 +806,11 @@
               <div className="space-y-4">
                 {loginRoleTab === 'student' ? (
                   <React.Fragment>
-                    <div><label className="block text-sm font-medium text-slate-700 mb-1">真实姓名</label><input type="text" className="w-full px-4 py-3 rounded-lg border border-slate-300 outline-none focus:ring-2 focus:ring-indigo-500" value={userNameInput} onChange={e => setUserNameInput(e.target.value)} /></div>
-                    <div><label className="block text-sm font-medium text-slate-700 mb-1">学号</label><input type="text" className="w-full px-4 py-3 rounded-lg border border-slate-300 outline-none focus:ring-2 focus:ring-indigo-500" value={studentIdInput} onChange={e => setStudentIdInput(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleLogin()} /></div>
+                    <div><label htmlFor="userNameInput" className="block text-sm font-medium text-slate-700 mb-1">真实姓名</label><input id="userNameInput" name="userNameInput" type="text" className="w-full px-4 py-3 rounded-lg border border-slate-300 outline-none focus:ring-2 focus:ring-indigo-500" value={userNameInput} onChange={e => setUserNameInput(e.target.value)} /></div>
+                    <div><label htmlFor="studentIdInput" className="block text-sm font-medium text-slate-700 mb-1">学号</label><input id="studentIdInput" name="studentIdInput" type="text" className="w-full px-4 py-3 rounded-lg border border-slate-300 outline-none focus:ring-2 focus:ring-indigo-500" value={studentIdInput} onChange={e => setStudentIdInput(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleLogin()} /></div>
                   </React.Fragment>
                 ) : (
-                  <div><label className="block text-sm font-medium text-slate-700 mb-1">管理员密码</label><input type="password" placeholder="请输入系统管理密码" className="w-full px-4 py-3 rounded-lg border border-slate-300 outline-none focus:ring-2 focus:ring-indigo-500" value={adminPwdInput} onChange={e => setAdminPwdInput(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleLogin()} /></div>
+                  <div><label htmlFor="adminPwdLogin" className="block text-sm font-medium text-slate-700 mb-1">管理员密码</label><input id="adminPwdLogin" name="adminPwdLogin" type="password" placeholder="请输入系统管理密码" className="w-full px-4 py-3 rounded-lg border border-slate-300 outline-none focus:ring-2 focus:ring-indigo-500" value={adminPwdInput} onChange={e => setAdminPwdInput(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleLogin()} /></div>
                 )}
                 <button onClick={handleLogin} className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-medium py-3 rounded-lg transition-colors mt-4">验证身份并进入</button>
               </div>
@@ -853,8 +866,8 @@
                     <p className="text-sm text-slate-500 mt-1">排名及分数基于全班最高加分自动折算同步。</p>
                   </div>
                   <div className="flex flex-wrap gap-3">
-                    <button onClick={exportSimpleTable} className="flex items-center gap-1.5 px-4 py-2 bg-white text-slate-700 border border-slate-300 hover:bg-slate-50 rounded-lg text-sm font-medium transition-colors shadow-sm"><FileDown className="w-4 h-4" /> 导出简表 (.xlsx)</button>
-                    <button onClick={exportTable} className="flex items-center gap-1.5 px-4 py-2 bg-green-50 text-green-700 hover:bg-green-100 rounded-lg text-sm font-medium border border-green-200 transition-colors"><ListOrdered className="w-4 h-4" /> 导出详细明细表</button>
+                    <button onClick={exportSimpleTable} className="flex items-center gap-1.5 px-4 py-2 bg-white text-slate-700 border border-slate-300 hover:bg-slate-50 rounded-lg text-sm font-medium transition-colors shadow-sm"><FileDown className="w-4 h-4" /> 简要Excel导出</button>
+                    <button onClick={exportTable} className="flex items-center gap-1.5 px-4 py-2 bg-green-50 text-green-700 hover:bg-green-100 rounded-lg text-sm font-medium border border-green-200 transition-colors"><ListOrdered className="w-4 h-4" /> 详细的Excel导出</button>
                   </div>
                 </div>
                 <div className="overflow-x-auto">
@@ -888,7 +901,7 @@
                               {s.isPending ? (
                                 <div className="text-blue-600 bg-blue-50 text-xs font-medium px-2 py-1 rounded w-max flex items-center gap-1"><Clock className="w-3.5 h-3.5"/> 待核验</div>
                               ) : s.hasAiWarning ? (
-                                <div className="text-red-600 bg-red-50 text-xs font-medium px-2 py-1 rounded w-max flex items-center gap-1"><AlertTriangle className="w-3.5 h-3.5"/> 异常拦截</div>
+                                <div className="text-red-600 bg-red-50 text-xs font-medium px-2 py-1 rounded w-max flex items-center gap-1"><AlertTriangle className="w-3.5 h-3.5"/> 异常</div>
                               ) : (
                                 <div className="text-green-600 text-xs font-medium flex items-center gap-1 w-max"><CheckCircle className="w-3.5 h-3.5"/> 正常通过</div>
                               )}
@@ -913,8 +926,8 @@
                   {!isReadOnly && !isAppLocked && <p className="text-sm text-slate-500 mt-1">所有数据极速保存，AI 智能审核将由管理员统一执行。</p>}
                 </div>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
-                  <div><label className="block text-sm font-medium text-slate-700 mb-1">姓名 (自动锁定)</label><input type="text" value={formName} disabled className="w-full px-4 py-2.5 rounded-lg border border-slate-200 bg-slate-50 text-slate-500 outline-none" /></div>
-                  <div><label className="block text-sm font-medium text-slate-700 mb-1">原始成绩 {!isFormDisabled && '(必填)'}</label><input type="number" value={formOriginalGrade} onChange={e=>setFormOriginalGrade(e.target.value)} disabled={isFormDisabled} placeholder="例如：90" className={`w-full px-4 py-2.5 rounded-lg border ${isFormDisabled ? 'border-slate-200 bg-slate-50 text-slate-500' : 'border-slate-300 focus:ring-2 focus:ring-indigo-500 bg-white'} outline-none`} /></div>
+                  <div><label htmlFor="formNameField" className="block text-sm font-medium text-slate-700 mb-1">姓名 (自动锁定)</label><input id="formNameField" name="formNameField" type="text" value={formName} disabled className="w-full px-4 py-2.5 rounded-lg border border-slate-200 bg-slate-50 text-slate-500 outline-none" /></div>
+                  <div><label htmlFor="formOriginalGradeField" className="block text-sm font-medium text-slate-700 mb-1">原始成绩 {!isFormDisabled && '(必填)'}</label><input id="formOriginalGradeField" name="formOriginalGradeField" type="number" value={formOriginalGrade} onChange={e=>setFormOriginalGrade(e.target.value)} disabled={isFormDisabled} placeholder="例如：90" className={`w-full px-4 py-2.5 rounded-lg border ${isFormDisabled ? 'border-slate-200 bg-slate-50 text-slate-500' : 'border-slate-300 focus:ring-2 focus:ring-indigo-500 bg-white'} outline-none`} /></div>
                 </div>
                 <div className="mb-4 flex items-center justify-between border-b border-slate-100 pb-4"><h3 className="text-md font-semibold text-slate-800 flex items-center gap-2"><BookOpen className="w-5 h-5 text-indigo-500" /> 综测加分明细</h3>{!isFormDisabled && <button onClick={()=>{setFormBonusItems([...formBonusItems, {id: Date.now(), points:'', type:'', description:'', aiStatus: 'Pending'}])}} className="flex items-center gap-2 px-4 py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded-lg text-sm font-medium transition-colors"><PlusCircle className="w-4 h-4" /> 添加加分项</button>}</div>
                 <div className="space-y-4">
@@ -925,13 +938,13 @@
                       <div key={item.id} className={`p-5 rounded-xl border relative group ${isFormDisabled ? 'bg-slate-50/50 border-slate-200' : 'bg-white border-slate-200 shadow-sm'}`}>
                         {!isFormDisabled && <button onClick={()=>setFormBonusItems(formBonusItems.filter(i=>i.id!==item.id))} className="absolute top-4 right-4 text-slate-400 hover:text-red-500 transition-colors"><Trash2 className="w-5 h-5" /></button>}
                         <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-3 pr-8">
-                          <div><label className="block text-xs text-slate-500 mb-1">申请分数</label><input type="number" step="0.01" value={item.points} onChange={e=>setFormBonusItems(formBonusItems.map(i=>i.id===item.id?{...i, points: e.target.value}:i))} disabled={isFormDisabled} className={`w-full px-3 py-2 rounded border text-sm outline-none ${isFormDisabled?'bg-transparent border-transparent px-0 font-medium text-slate-800':'border-slate-300 focus:ring-1 focus:ring-indigo-500'}`} /></div>
-                          <div><label className="block text-xs text-slate-500 mb-1">活动类型</label><input type="text" value={item.type} onChange={e=>setFormBonusItems(formBonusItems.map(i=>i.id===item.id?{...i, type: e.target.value}:i))} disabled={isFormDisabled} className={`w-full px-3 py-2 rounded border text-sm outline-none ${isFormDisabled?'bg-transparent border-transparent px-0 font-medium text-slate-800':'border-slate-300 focus:ring-1 focus:ring-indigo-500'}`} /></div>
-                          <div className="md:col-span-2"><label className="block text-xs text-slate-500 mb-1">活动说明</label><input type="text" value={item.description} onChange={e=>setFormBonusItems(formBonusItems.map(i=>i.id===item.id?{...i, description: e.target.value}:i))} disabled={isFormDisabled} className={`w-full px-3 py-2 rounded border text-sm outline-none ${isFormDisabled?'bg-transparent border-transparent px-0 font-medium text-slate-800':'border-slate-300 focus:ring-1 focus:ring-indigo-500'}`} /></div>
+                          <div><label htmlFor={`points-${item.id}`} className="block text-xs text-slate-500 mb-1">申请分数</label><input id={`points-${item.id}`} name={`points-${item.id}`} type="number" step="0.01" value={item.points} onChange={e=>setFormBonusItems(formBonusItems.map(i=>i.id===item.id?{...i, points: e.target.value}:i))} disabled={isFormDisabled} className={`w-full px-3 py-2 rounded border text-sm outline-none ${isFormDisabled?'bg-transparent border-transparent px-0 font-medium text-slate-800':'border-slate-300 focus:ring-1 focus:ring-indigo-500'}`} /></div>
+                          <div><label htmlFor={`type-${item.id}`} className="block text-xs text-slate-500 mb-1">活动类型</label><input id={`type-${item.id}`} name={`type-${item.id}`} type="text" value={item.type} onChange={e=>setFormBonusItems(formBonusItems.map(i=>i.id===item.id?{...i, type: e.target.value}:i))} disabled={isFormDisabled} className={`w-full px-3 py-2 rounded border text-sm outline-none ${isFormDisabled?'bg-transparent border-transparent px-0 font-medium text-slate-800':'border-slate-300 focus:ring-1 focus:ring-indigo-500'}`} /></div>
+                          <div className="md:col-span-2"><label htmlFor={`desc-${item.id}`} className="block text-xs text-slate-500 mb-1">活动说明</label><input id={`desc-${item.id}`} name={`desc-${item.id}`} type="text" value={item.description} onChange={e=>setFormBonusItems(formBonusItems.map(i=>i.id===item.id?{...i, description: e.target.value}:i))} disabled={isFormDisabled} className={`w-full px-3 py-2 rounded border text-sm outline-none ${isFormDisabled?'bg-transparent border-transparent px-0 font-medium text-slate-800':'border-slate-300 focus:ring-1 focus:ring-indigo-500'}`} /></div>
                         </div>
                         <div className={`flex flex-col md:flex-row gap-4 items-start justify-between mt-4 pt-4 border-t ${isFormDisabled ? 'border-slate-200/50' : 'border-slate-100'}`}>
                           <div className="flex flex-col gap-2">
-                            {!isFormDisabled && <label className="cursor-pointer px-3 py-1.5 bg-white border border-slate-300 rounded-md hover:bg-slate-50 transition-colors flex items-center gap-2 text-sm text-slate-700 w-max"><UploadCloud className="w-4 h-4" />上传材料<input type="file" accept="image/*" className="hidden" onChange={e=>{const f=e.target.files[0];if(f){compressImage(f, b64=>{setFormBonusItems(formBonusItems.map(i=>i.id===item.id?{...i, materialName: f.name, materialBase64: b64, aiStatus: 'Pending', aiReason: ''}:i));});}}} /></label>}
+                            {!isFormDisabled && <label htmlFor={`upload-${item.id}`} className="cursor-pointer px-3 py-1.5 bg-white border border-slate-300 rounded-md hover:bg-slate-50 transition-colors flex items-center gap-2 text-sm text-slate-700 w-max"><UploadCloud className="w-4 h-4" />上传材料<input id={`upload-${item.id}`} name={`upload-${item.id}`} type="file" accept="image/*" className="hidden" onChange={e=>{const f=e.target.files[0];if(f){compressImage(f, b64=>{setFormBonusItems(formBonusItems.map(i=>i.id===item.id?{...i, materialName: f.name, materialBase64: b64, aiStatus: 'Pending', aiReason: ''}:i));});}}} /></label>}
                             {item.materialName ? <button onClick={()=>item.materialBase64 && setPreviewImage(item.materialBase64)} className="text-xs font-medium text-indigo-600 bg-indigo-50 px-2 py-1 rounded max-w-[200px] truncate flex items-center gap-1 hover:bg-indigo-100 transition-colors w-max"><FileText className="w-3 h-3 flex-shrink-0"/>{item.materialName}</button> : <span className="text-xs text-slate-400">无材料</span>}
                           </div>
                           
@@ -961,12 +974,12 @@
               <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 md:p-8 max-w-3xl mx-auto">
                 <div className="flex items-center gap-3 mb-6 border-b border-slate-100 pb-4"><div className="p-2 bg-purple-100 rounded-lg"><Sparkles className="w-6 h-6 text-purple-600" /></div><div><h2 className="text-lg font-bold text-slate-800">班级 AI 智能审核配置</h2><p className="text-sm text-slate-500 mt-1">本班的所有同学都可以对 AI 审核规则进行补充。</p></div></div>
                 <div className="mb-8">
-                  <label className="block text-sm font-medium text-slate-700 mb-2">官方评分文件 (支持 PDF/图片)</label>
+                  <label htmlFor="rulesFileInput" className="block text-sm font-medium text-slate-700 mb-2">官方评分文件 (支持 PDF/图片)</label>
                   <div className="flex flex-col sm:flex-row sm:items-center gap-4">
                     <button onClick={() => fileInputRef.current?.click()} className="flex items-center justify-center gap-2 px-4 py-2 bg-white border border-slate-300 rounded-lg text-sm font-medium text-slate-700 hover:bg-slate-50 transition-colors shadow-sm w-full sm:w-auto">
                       <UploadCloud className="w-4 h-4 text-slate-500" /> 选择/替换规则文件
                     </button>
-                    <input type="file" accept="application/pdf, image/*" ref={fileInputRef} onChange={handleRuleFileUpload} className="hidden" />
+                    <input id="rulesFileInput" name="rulesFileInput" type="file" accept="application/pdf, image/*" ref={fileInputRef} onChange={handleRuleFileUpload} className="hidden" />
                     {pdfFile.name ? (
                       <div className="flex items-center gap-2 px-3 py-1.5 bg-green-50 text-green-700 border border-green-200 rounded text-sm w-max max-w-full">
                         <FileText className="w-4 h-4 flex-shrink-0" /> 
@@ -977,8 +990,8 @@
                   </div>
                 </div>
                 <div className="mb-6">
-                  <label className="block text-sm font-medium text-slate-700 mb-2">文字补充说明 (所有人可编辑)</label>
-                  <textarea rows="8" value={aiRulesText} onChange={e=>setAiRulesText(e.target.value)} className="w-full px-4 py-3 rounded-lg border border-slate-300 focus:ring-2 focus:ring-purple-500 bg-white text-sm leading-relaxed outline-none" placeholder="在此处编写细则即可"></textarea>
+                  <label htmlFor="aiRulesTextInput" className="block text-sm font-medium text-slate-700 mb-2">文字补充说明 (所有人可编辑)</label>
+                  <textarea id="aiRulesTextInput" name="aiRulesTextInput" rows="8" value={aiRulesText} onChange={e=>setAiRulesText(e.target.value)} onFocus={() => setIsEditingRules(true)} onBlur={() => setIsEditingRules(false)} className="w-full px-4 py-3 rounded-lg border border-slate-300 focus:ring-2 focus:ring-purple-500 bg-white text-sm leading-relaxed outline-none" placeholder="在此处编写细则即可"></textarea>
                 </div>
                 <div className="flex justify-end pt-4 border-t border-slate-100"><button onClick={saveAiRules} className="flex items-center gap-2 bg-purple-600 hover:bg-purple-700 text-white px-6 py-2.5 rounded-lg font-medium transition-colors shadow-sm"><Save className="w-4 h-4" /> 保存 / 补充全局规则</button></div>
               </div>
@@ -991,7 +1004,5 @@
     const root = createRoot(document.getElementById('root'));
     root.render(<App />);
   </script>
-</body>
-</html>
 </body>
 </html>
