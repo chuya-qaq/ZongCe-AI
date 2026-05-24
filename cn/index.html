@@ -446,7 +446,7 @@
           }
           const res = await fetchWithRetry(`https://api.siliconflow.cn/v1/chat/completions`, {
             method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${aiApiKey}` },
-            body: JSON.stringify({ model: "THUDM/GLM-4.1V-9B-Thinking", messages: [{ role: "user", content: textPayload }] })
+            body: JSON.stringify({ model: "Qwen/Qwen3.5-4B", messages: [{ role: "user", content: textPayload }] })
           });
           
           let rawContent = res.choices?.[0]?.message?.content || "";
@@ -555,7 +555,7 @@
             if (it.materialBase64) content.push({ type: "image_url", image_url: { url: it.materialBase64 } });
             const res = await fetchWithRetry(`https://api.siliconflow.cn/v1/chat/completions`, {
               method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${aiApiKey}` },
-              body: JSON.stringify({ model: "THUDM/GLM-4.1V-9B-Thinking", messages: [{ role: "user", content }] })
+             body: JSON.stringify({ model: "Qwen/Qwen3.5-4B", messages: [{ role: "user", content: textPayload }] })
             });
             let clean = (res.choices?.[0]?.message?.content || "").replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
             const match = clean.match(/\{[\s\S]*\}/);
