@@ -542,51 +542,51 @@
         } catch (e) { showToast("保存失败", 'error'); }
       };
 
-       const processAI = async (items, studentName) => {
-        const updated = [...items];
-        const rules = classesData[currentClass]?.rulesText || '';
-        const pdf = classesData[currentClass]?.rulesPdfBase64 || '';
-        for (let i = 0; i < updated.length; i++) {
-          const it = updated[i];
-          if (it.aiStatus !== 'Pending' && it.aiStatus) continue;
-          if (!it.points || !it.description) continue;
-          const prompt = `你是审核AI。\n学生:${studentName}\n细则:${rules}\n申请:${it.points}分; ${it.description}\n材料:${it.materialName?'已上传':'无'}\n核查所有违规点并在reason列出。如无特权且缺材料直接Reject。输出合法JSON: {"status":"Approve"|"Reject"|"Manual Review","reason":"详细依据"}`;
-          try {
-            const content = [{ type: "text", text: prompt }];
-            if (pdf) content.push({ type: "image_url", image_url: { url: `data:${classesData[currentClass]?.rulesFileMimeType};base64,${pdf}` } });
-            if (it.materialBase64) content.push({ type: "image_url", image_url: { url: it.materialBase64 } });
-            const res = await fetchWithRetry(`https://api.siliconflow.cn/v1/chat/completions`, {
-              method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${aiApiKey}` },
-              body: JSON.stringify({ model: "Qwen/Qwen3.5-4B", messages: [{ role: "user", content: content }] })
-            });
-            let clean = (res.choices?.[0]?.message?.content || "").replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
-            const match = clean.match(/\{[\s\S]*\}/);
-            let decision = match ? JSON.parse(match[0]) : JSON.parse(clean.replace(/```json/gi, '').replace(/```/g, '').trim());
-            updated[i].aiStatus = decision.status; updated[i].aiReason = decision.reason;
-          } catch (e) { updated[i].aiStatus = 'Manual Review'; updated[i].aiReason = 'API异常'; }
-        }
-        return updated;
-      };
+      const processAI = async (items, studentName) => {
+        const updated = [...items];
+        const rules = classesData[currentClass]?.rulesText || '';
+        const pdf = classesData[currentClass]?.rulesPdfBase64 || '';
+        for (let i = 0; i < updated.length; i++) {
+          const it = updated[i];
+          if (it.aiStatus !== 'Pending' && it.aiStatus) continue;
+          if (!it.points || !it.description) continue;
+          const prompt = `你是审核AI。\n学生:${studentName}\n细则:${rules}\n申请:${it.points}分; ${it.description}\n材料:${it.materialName?'已上传':'无'}\n核查所有违规点并在reason列出。如无特权且缺材料直接Reject。输出合法JSON: {"status":"Approve"|"Reject"|"Manual Review","reason":"详细依据"}`;
+          try {
+            const content = [{ type: "text", text: prompt }];
+            if (pdf) content.push({ type: "image_url", image_url: { url: `data:${classesData[currentClass]?.rulesFileMimeType};base64,${pdf}` } });
+            if (it.materialBase64) content.push({ type: "image_url", image_url: { url: it.materialBase64 } });
+            const res = await fetchWithRetry(`https://api.siliconflow.cn/v1/chat/completions`, {
+              method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${aiApiKey}` },
+              body: JSON.stringify({ model: "PaddlePaddle/PaddleOCR-VL-1.5", messages: [{ role: "user", content: content }] })
+            });
+            let clean = (res.choices?.[0]?.message?.content || "").replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+            const match = clean.match(/\{[\s\S]*\}/);
+            let decision = match ? JSON.parse(match[0]) : JSON.parse(clean.replace(/```json/gi, '').replace(/```/g, '').trim());
+            updated[i].aiStatus = decision.status; updated[i].aiReason = decision.reason;
+          } catch (e) { updated[i].aiStatus = 'Manual Review'; updated[i].aiReason = 'API异常'; }
+        }
+        return updated;
+      };
 
-      const handleBatchAudit = async () => {
-        const targets = currentStudents.filter(s => s.bonusItems?.some(i => i.aiStatus === 'Pending' || !i.aiStatus));
-        if (!targets.length) return showToast("无待审", 'success');
-        setIsBatching(true);
-        const table = new window.BaaS.TableObject('students');
-        for (let i = 0; i < targets.length; i++) {
-          const s = targets[i]; if (!s.id) continue;
-          setBatchProgress(`审核中: ${s.name} (${i+1}/${targets.length})`);
-          await table.getWithoutData(s.id).set({ isAiProcessing: true }).update();
-          const items = await processAI(s.bonusItems, s.name);
-          try {
-            const fresh = await table.get(s.id);
-            if (fresh.data.lastUpdateTime !== s.lastUpdateTime) await table.getWithoutData(s.id).set({ bonusItems: fresh.data.bonusItems.map(item => ({ ...item, aiStatus: 'Pending', aiReason: '数据变动需重排' })), isAiProcessing: false }).update();
-            else await table.getWithoutData(s.id).set({ bonusItems: items, isAiProcessing: false }).update();
-          } catch (err) {}
-          if (i < targets.length - 1) await new Promise(r => setTimeout(r, 2500));
-        }
-        setIsBatching(false); fetchAllData(); showToast("审核完成", 'success');
-      };
+      const handleBatchAudit = async () => {
+        const targets = currentStudents.filter(s => s.bonusItems?.some(i => i.aiStatus === 'Pending' || !i.aiStatus));
+        if (!targets.length) return showToast("无待审", 'success');
+        setIsBatching(true);
+        const table = new window.BaaS.TableObject('students');
+        for (let i = 0; i < targets.length; i++) {
+          const s = targets[i]; if (!s.id) continue;
+          setBatchProgress(`审核中: ${s.name} (${i+1}/${targets.length})`);
+          await table.getWithoutData(s.id).set({ isAiProcessing: true }).update();
+          const items = await processAI(s.bonusItems, s.name);
+          try {
+            const fresh = await table.get(s.id);
+            if (fresh.data.lastUpdateTime !== s.lastUpdateTime) await table.getWithoutData(s.id).set({ bonusItems: fresh.data.bonusItems.map(item => ({ ...item, aiStatus: 'Pending', aiReason: '数据变动需重排' })), isAiProcessing: false }).update();
+            else await table.getWithoutData(s.id).set({ bonusItems: items, isAiProcessing: false }).update();
+          } catch (err) {}
+          if (i < targets.length - 1) await new Promise(r => setTimeout(r, 2500));
+        }
+        setIsBatching(false); fetchAllData(); showToast("审核完成", 'success');
+      };
 
       const exportSimpleTable = () => {
         if (!rankedStudents.length) return showToast("无数据", 'error');
@@ -1077,6 +1077,9 @@
     html:not(.dark) .custom-scrollbar::-webkit-scrollbar-thumb:hover {
       background: rgba(148, 163, 184, 1); 
     }
+  </style>
+</body>
+</html>
   </style>
 </body>
 </html>
