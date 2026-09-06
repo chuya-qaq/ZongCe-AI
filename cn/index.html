@@ -548,9 +548,9 @@
         const pdf = classesData[currentClass]?.rulesPdfBase64 || '';
         for (let i = 0; i < updated.length; i++) {
           const it = updated[i];
-          if (it.aiStatus !== 'Pending' && it.aiStatus) continue;
+          //if (it.aiStatus !== 'Pending' && it.aiStatus) continue;
           if (!it.points || !it.description) continue;
-          const prompt = `你是审核AI。\n学生:${studentName}\n细则:${rules}\n申请:${it.points}分; ${it.description}\n材料:${it.materialName?'已上传':'无'}\n核查所有违规点并在reason列出。如无特权且缺材料直接Reject。输出合法JSON: {"status":"Approve"|"Reject"|"Manual Review","reason":"详细依据"}`;
+         const prompt = `你是审核AI。\n学生:${studentName}\n细则:${rules}\n申请:${it.points}分; ${it.description}\n材料:${it.materialName?'已上传':'无'}\n审核要求：\n1. 严格判断申请的加分数值（${it.points}分）是否符合细则规定，分数不符或超限必须直接Reject。\n2. 若材料为“无”，但其描述明确符合免交材料特权，或已在其他渠道通过了材料申请，可特许Approve加分；否则若无特权且缺材料则直接Reject。\n核查所有违规点并在reason列出详细依据。输出合法JSON: {"status":"Approve"|"Reject"|"Manual Review","reason":"详细依据"}`;
           try {
             const content = [{ type: "text", text: prompt }];
             if (pdf) content.push({ type: "image_url", image_url: { url: `data:${classesData[currentClass]?.rulesFileMimeType};base64,${pdf}` } });
@@ -569,8 +569,10 @@
       };
 
       const handleBatchAudit = async () => {
-        const targets = currentStudents.filter(s => s.bonusItems?.some(i => i.aiStatus === 'Pending' || !i.aiStatus));
-        if (!targets.length) return showToast("无待审", 'success');
+        // 取消原有的未审核过滤条件，将所有有加分项的学生都加入重审队列
+        const targets = currentStudents.filter(s => s.bonusItems && s.bonusItems.length > 0);
+        if (!targets.length) return showToast("暂无申报项目需要审核", 'success');
+        
         setIsBatching(true);
         const table = new window.BaaS.TableObject('students');
         for (let i = 0; i < targets.length; i++) {
@@ -580,12 +582,15 @@
           const items = await processAI(s.bonusItems, s.name);
           try {
             const fresh = await table.get(s.id);
-            if (fresh.data.lastUpdateTime !== s.lastUpdateTime) await table.getWithoutData(s.id).set({ bonusItems: fresh.data.bonusItems.map(item => ({ ...item, aiStatus: 'Pending', aiReason: '数据变动需重排' })), isAiProcessing: false }).update();
-            else await table.getWithoutData(s.id).set({ bonusItems: items, isAiProcessing: false }).update();
+            if (fresh.data.lastUpdateTime !== s.lastUpdateTime) {
+              await table.getWithoutData(s.id).set({ bonusItems: fresh.data.bonusItems.map(item => ({ ...item, aiStatus: 'Pending', aiReason: '数据变动需重排' })), isAiProcessing: false }).update();
+            } else {
+              await table.getWithoutData(s.id).set({ bonusItems: items, isAiProcessing: false }).update();
+            }
           } catch (err) {}
           if (i < targets.length - 1) await new Promise(r => setTimeout(r, 2500));
         }
-        setIsBatching(false); fetchAllData(); showToast("审核完成", 'success');
+        setIsBatching(false); fetchAllData(); showToast("全部审核完成", 'success');
       };
 
       const exportSimpleTable = () => {
